@@ -1,0 +1,204 @@
+{
+  "name": "prereview",
+  "displayName": "Prereview",
+  "description": "Review agent-written changes locally, GitHub PR style.",
+  "version": "0.0.1",
+  "publisher": "marischn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MariSchn/Prereview.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prereview",
+          "title": "Prereview",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "prereview": [
+        {
+          "id": "prereview.files",
+          "name": "Changed Files"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "prereview.files",
+        "contents": "No active review.\n[Start Review](command:prereview.startReview)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "prereview.startReview",
+        "title": "Start Review",
+        "category": "Prereview",
+        "icon": "$(add)"
+      },
+      {
+        "command": "prereview.openAllChanges",
+        "title": "Open All Changes",
+        "category": "Prereview",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "prereview.copyReviewPath",
+        "title": "Copy Review Path",
+        "category": "Prereview",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "prereview.refresh",
+        "title": "Refresh",
+        "category": "Prereview",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "prereview.openDiff",
+        "title": "Open Diff"
+      },
+      {
+        "command": "prereview.createThread",
+        "title": "Comment"
+      },
+      {
+        "command": "prereview.reply",
+        "title": "Reply"
+      },
+      {
+        "command": "prereview.resolve",
+        "title": "Resolve",
+        "icon": "$(check)"
+      },
+      {
+        "command": "prereview.unresolve",
+        "title": "Reopen",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "prereview.deleteComment",
+        "title": "Delete",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "prereview.openAllChanges",
+          "when": "view == prereview.files && prereview.active",
+          "group": "navigation@1"
+        },
+        {
+          "command": "prereview.copyReviewPath",
+          "when": "view == prereview.files && prereview.active",
+          "group": "navigation@2"
+        },
+        {
+          "command": "prereview.refresh",
+          "when": "view == prereview.files && prereview.active",
+          "group": "navigation@3"
+        },
+        {
+          "command": "prereview.startReview",
+          "when": "view == prereview.files",
+          "group": "navigation@4"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "prereview.createThread",
+          "group": "inline",
+          "when": "commentController == prereview && commentThreadIsEmpty"
+        },
+        {
+          "command": "prereview.reply",
+          "group": "inline",
+          "when": "commentController == prereview && !commentThreadIsEmpty"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "prereview.resolve",
+          "group": "inline",
+          "when": "commentController == prereview && commentThread == unresolved"
+        },
+        {
+          "command": "prereview.unresolve",
+          "group": "inline",
+          "when": "commentController == prereview && commentThread == resolved"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "prereview.deleteComment",
+          "group": "inline",
+          "when": "commentController == prereview"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "prereview.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "prereview.createThread",
+          "when": "false"
+        },
+        {
+          "command": "prereview.reply",
+          "when": "false"
+        },
+        {
+          "command": "prereview.resolve",
+          "when": "false"
+        },
+        {
+          "command": "prereview.unresolve",
+          "when": "false"
+        },
+        {
+          "command": "prereview.deleteComment",
+          "when": "false"
+        },
+        {
+          "command": "prereview.openAllChanges",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.copyReviewPath",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.refresh",
+          "when": "prereview.active"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "package": "vsce package --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^7.0.2"
+  }
+}
