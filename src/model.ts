@@ -55,6 +55,16 @@ export function threadStatus(thread: Thread): ThreadStatus {
   return thread.comments[thread.comments.length - 1]?.author === REVIEWER ? 'awaitingAgent' : 'awaitingYou';
 }
 
+export function countStatuses(threads: Thread[]): Record<ThreadStatus, number> {
+  const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
+  for (const t of threads) counts[threadStatus(t)]++;
+  return counts;
+}
+
+export function pairLabel(data: ReviewData): string {
+  return `${data.base} ↔ ${data.target ?? 'working tree'}`;
+}
+
 export function reviewFileName(base: string, target: string | null): string {
   const slug = (s: string) => s.replace(/[^\w.-]+/g, '-');
   return `${slug(base)}...${slug(target ?? 'worktree')}.json`;

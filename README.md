@@ -25,6 +25,8 @@ To develop, open this folder in VS Code and press F5.
 5. Click **Copy Review Path** and send the path to your agent, like a PR link. The file tells the agent how to reply. The badge on the Prereview icon counts threads awaiting you, and a notification appears once the agent has answered every open thread.
 6. **Finish Review** deletes the review when you are done.
 
+You can have several reviews open at once, for example one per agent. **Reviews** lists them all with their thread counts, like a pull request list. Click one to switch to it. The badge counts threads awaiting you across all reviews.
+
 ## Review file
 
 Reviews are stored in `.prereview/<base>...<target>.json` at the repository root. The folder ignores itself, so nothing gets committed.

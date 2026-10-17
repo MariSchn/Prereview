@@ -43,6 +43,15 @@ async function writeReview(filePath: string, data: ReviewData): Promise<void> {
   await fs.writeFile(filePath, serializeReview(data));
 }
 
+function viewedKey(filePath: string): string {
+  return `prereview.viewed:${filePath}`;
+}
+
+export async function deleteReview(filePath: string, state: vscode.Memento): Promise<void> {
+  await fs.rm(filePath, { force: true });
+  await state.update(viewedKey(filePath), undefined);
+}
+
 export type Side = 'head' | 'base';
 
 export interface Location {
@@ -158,11 +167,6 @@ export class Review implements vscode.Disposable {
     });
   }
 
-  async delete(): Promise<void> {
-    await fs.rm(this.filePath, { force: true });
-    await this.state.update(this.viewedKey, undefined);
-  }
-
   position(thread: Thread): Position | undefined {
     if (thread.startLine === undefined) return undefined;
     return this.positions.get(thread.id) ?? { start: thread.startLine, end: thread.endLine ?? thread.startLine, outdated: true };
@@ -248,7 +252,7 @@ export class Review implements vscode.Disposable {
   }
 
   private get viewedKey(): string {
-    return `prereview.viewed:${this.filePath}`;
+    return viewedKey(this.filePath);
   }
 
   private viewed(): Record<string, string> {

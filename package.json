@@ -31,6 +31,10 @@
     "views": {
       "prereview": [
         {
+          "id": "prereview.reviews",
+          "name": "Reviews"
+        },
+        {
           "id": "prereview.files",
           "name": "Changed Files"
         }
@@ -38,8 +42,12 @@
     },
     "viewsWelcome": [
       {
+        "view": "prereview.reviews",
+        "contents": "No reviews yet.\n[Start Review](command:prereview.startReview)"
+      },
+      {
         "view": "prereview.files",
-        "contents": "No active review.\n[Start Review](command:prereview.startReview)"
+        "contents": "No active review. Pick one under Reviews or start a new one.\n[Start Review](command:prereview.startReview)"
       }
     ],
     "commands": [
@@ -48,6 +56,10 @@
         "title": "Open or Start Review…",
         "category": "Prereview",
         "icon": "$(add)"
+      },
+      {
+        "command": "prereview.switchReview",
+        "title": "Open Review"
       },
       {
         "command": "prereview.openOverview",
@@ -141,6 +153,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "prereview.startReview",
+          "when": "view == prereview.reviews",
+          "group": "navigation"
+        },
+        {
           "command": "prereview.openOverview",
           "when": "view == prereview.files && prereview.active",
           "group": "navigation@1"
@@ -172,6 +189,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "prereview.copyReviewPath",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "inline@1"
+        },
+        {
+          "command": "prereview.finishReview",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "inline@2"
+        },
         {
           "command": "prereview.openSinceViewed",
           "when": "view == prereview.files && viewItem == file-updated",
@@ -239,6 +266,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "prereview.switchReview",
+          "when": "false"
+        },
         {
           "command": "prereview.openDiff",
           "when": "false"

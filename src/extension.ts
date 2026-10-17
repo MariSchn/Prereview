@@ -1,13 +1,13 @@
-import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
-import { Thread, ThreadStatus, parseReview, threadStatus } from './model';
+import { Thread, ThreadStatus, countStatuses, pairLabel } from './model';
 import { Overview, confirmDelete } from './overview';
-import { Review, ReviewChange, SCHEME, contentProvider } from './review';
+import { Review, ReviewChange, SCHEME, contentProvider, deleteReview } from './review';
+import { ReviewEntry, ReviewsView, countsLabel, listReviews } from './reviewsView';
 
 const ACTIVE_KEY = 'prereview.activeReview';
 
@@ -17,6 +17,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reviewer: vscode.Uri.joinPath(media, 'reviewer.svg'),
     agent: vscode.Uri.joinPath(media, 'agent.svg'),
   });
+  const reviews = new ReviewsView();
+  const reviewsTree = vscode.window.createTreeView('prereview.reviews', { treeDataProvider: reviews });
   const files = new FilesView();
   const tree = vscode.window.createTreeView('prereview.files', { treeDataProvider: files, manageCheckboxStateManually: true });
   const overview = new Overview(context.extensionUri, (thread) => (review ? openThread(review, thread) : Promise.resolve()));
@@ -60,11 +62,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       tree.message = undefined;
       statusItem.hide();
     }
-    tree.badge = next.awaitingYou
-      ? { value: next.awaitingYou, tooltip: `${next.awaitingYou} thread${next.awaitingYou === 1 ? '' : 's'} awaiting you` }
-      : undefined;
     counts = next;
     updateEditorContext();
+  };
+
+  const updateBadge = () => {
+    const awaiting = reviews.entries.reduce((n, e) => n + e.counts.awaitingYou, 0);
+    reviewsTree.badge = awaiting
+      ? { value: awaiting, tooltip: `${awaiting} thread${awaiting === 1 ? '' : 's'} awaiting you` }
+      : undefined;
   };
 
   const setReview = (next: Review | undefined) => {
@@ -74,6 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     files.review = next;
     comments.setReview(next);
     overview.setReview(next);
+    reviews.setActive(next?.filePath);
     counts = countStatuses(next?.data.threads ?? []);
     listener = next?.onDidChange(updateUi);
     updateUi({ external: false });
@@ -93,6 +100,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const fileArg = (arg?: FileItem | ChangedFile): ChangedFile | undefined => (arg ? ('kind' in arg ? arg.file : arg) : activeFile());
 
   context.subscriptions.push(
+    reviews,
+    reviewsTree,
+    reviews.onDidChangeTreeData(updateBadge),
     comments,
     tree,
     overview,
@@ -110,6 +120,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const next = await pickReview(context.workspaceState);
       if (!next) return;
       setReview(next);
+      overview.show();
+    }),
+    command('prereview.switchReview', async (entry: ReviewEntry) => {
+      if (entry.filePath !== review?.filePath) setReview(await Review.load(entry.filePath, context.workspaceState));
       overview.show();
     }),
     command('prereview.openOverview', () => overview.show()),
@@ -136,23 +150,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const file = fileArg(arg);
       if (file) return review?.setViewed(file, false);
     }),
-    command('prereview.copyReviewPath', async () => {
-      if (!review) return;
-      await vscode.env.clipboard.writeText(review.filePath);
+    command('prereview.copyReviewPath', async (entry?: ReviewEntry) => {
+      const filePath = entry?.filePath ?? review?.filePath;
+      if (!filePath) return;
+      await vscode.env.clipboard.writeText(filePath);
       vscode.window.showInformationMessage('Review path copied. Send it to your agent.');
     }),
     command('prereview.refresh', () => review?.refresh()),
-    command('prereview.finishReview', async () => {
-      if (!review) return;
+    command('prereview.finishReview', async (entry?: ReviewEntry) => {
+      const filePath = entry?.filePath ?? review?.filePath;
+      if (!filePath) return;
+      const title = entry ? pairLabel(entry.data) : review!.title;
       const choice = await vscode.window.showWarningMessage(
-        `Finish the review of ${review.title}?`,
-        { modal: true, detail: `This deletes ${path.basename(review.filePath)} and all its comments.` },
+        `Finish the review of ${title}?`,
+        { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments.` },
         'Finish Review',
       );
       if (choice !== 'Finish Review') return;
-      const finished = review;
-      setReview(undefined);
-      await finished.delete();
+      if (filePath === review?.filePath) setReview(undefined);
+      await deleteReview(filePath, context.workspaceState);
+      await reviews.refresh();
     }),
     command('prereview.createThread', (reply: vscode.CommentReply) => comments.createThread(reply)),
     command('prereview.reply', (reply: vscode.CommentReply) => comments.reply(reply)),
@@ -166,6 +183,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder) {
+    repoRoot(folder.uri.fsPath).then(
+      (root) => reviews.setRoot(root),
+      () => undefined,
+    );
+  }
+
   const saved = context.workspaceState.get<string>(ACTIVE_KEY);
   if (saved) {
     try {
@@ -174,12 +199,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       context.workspaceState.update(ACTIVE_KEY, undefined);
     }
   }
-}
-
-function countStatuses(threads: Thread[]): Record<ThreadStatus, number> {
-  const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
-  for (const t of threads) counts[threadStatus(t)]++;
-  return counts;
 }
 
 function statusText(counts: Record<ThreadStatus, number>): string {
@@ -216,7 +235,12 @@ async function pickReview(state: vscode.Memento): Promise<Review | undefined> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) throw new Error('Open a folder inside a git repository first.');
   const root = await repoRoot(folder.uri.fsPath);
-  const existing = await existingReviews(root);
+  const existing = (await listReviews(root)).map((e) => ({
+    label: e.data.title || pairLabel(e.data),
+    description: e.data.title ? pairLabel(e.data) : undefined,
+    detail: countsLabel(e.counts),
+    filePath: e.filePath,
+  }));
   if (existing.length) {
     const picked = await vscode.window.showQuickPick(
       [{ label: '$(add) New Review…' }, { label: 'Open reviews', kind: vscode.QuickPickItemKind.Separator }, ...existing],
@@ -245,35 +269,6 @@ async function pickReview(state: vscode.Memento): Promise<Review | undefined> {
   const picked = await vscode.window.showQuickPick(targets, { placeHolder: `Compare ${base} with` });
   if (!picked) return undefined;
   return Review.open(root, base, picked.target, state);
-}
-
-async function existingReviews(root: string): Promise<(vscode.QuickPickItem & { filePath: string })[]> {
-  const dir = path.join(root, '.prereview');
-  const names = await fs.readdir(dir).catch(() => [] as string[]);
-  const items: (vscode.QuickPickItem & { filePath: string })[] = [];
-  for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
-    const filePath = path.join(dir, name);
-    try {
-      const data = parseReview(await fs.readFile(filePath, 'utf8'));
-      const pair = `${data.base} ↔ ${data.target ?? 'working tree'}`;
-      const counts = countStatuses(data.threads);
-      items.push({
-        label: data.title || pair,
-        description: data.title ? pair : undefined,
-        detail: [
-          counts.awaitingYou && `${counts.awaitingYou} awaiting you`,
-          counts.awaitingAgent && `${counts.awaitingAgent} awaiting agent`,
-          counts.resolved && `${counts.resolved} resolved`,
-        ]
-          .filter(Boolean)
-          .join(' · ') || 'No comments yet',
-        filePath,
-      });
-    } catch {
-      continue;
-    }
-  }
-  return items;
 }
 
 function tildify(dir: string): string {
