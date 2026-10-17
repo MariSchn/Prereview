@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from 'node:test';
-import { locate, parseReview, reviewFileName, serializeReview } from '../model';
+import { REVIEWER, locate, parseReview, reviewFileName, serializeReview, threadStatus } from '../model';
 
 test('locate keeps a thread whose snippet still matches', () => {
   assert.deepStrictEqual(locate(['a', 'b', 'c'], 'b', 2), { start: 2, end: 2 });
@@ -16,26 +16,57 @@ test('locate returns undefined when the snippet is gone', () => {
   assert.strictEqual(locate(['a', 'b'], 'c', 1), undefined);
 });
 
-test('parseReview drops malformed threads and fills defaults', () => {
+test('parseReview reads line, file, base-side and general threads', () => {
   const data = parseReview(
     JSON.stringify({
+      title: 'Add caching',
       base: 'main',
       threads: [
-        { id: 't1', file: 'a.ts', startLine: 3, comments: [{ body: 'hi' }, { nope: 1 }] },
-        { file: 'b.ts', startLine: 1, comments: [] },
+        { id: 't1', file: 'a.ts', startLine: 3, endLine: 1, comments: [{ body: 'hi' }, { nope: 1 }] },
+        { id: 't2', file: 'a.ts', side: 'base', startLine: 2, snippet: 'old', comments: [{ author: REVIEWER, body: 'why?' }] },
+        { id: 't3', file: 'b.ts', snippet: 'ignored', comments: [{ body: 'file' }] },
+        { id: 't4', side: 'base', comments: [{ body: 'general' }] },
+        { id: 't5', file: 'c.ts', startLine: 1, comments: [] },
       ],
     }),
   );
+  assert.deepStrictEqual(data.title, 'Add caching');
+  assert.deepStrictEqual(data.description, '');
   assert.strictEqual(data.target, null);
-  assert.deepStrictEqual(data.threads, [
-    { id: 't1', file: 'a.ts', startLine: 3, endLine: 3, snippet: '', resolved: false, comments: [{ author: 'agent', body: 'hi', createdAt: undefined }] },
-  ]);
+  assert.deepStrictEqual(
+    data.threads.map(({ id, file, side, startLine, endLine, snippet }) => ({ id, file, side, startLine, endLine, snippet })),
+    [
+      { id: 't1', file: 'a.ts', side: undefined, startLine: 3, endLine: 3, snippet: undefined },
+      { id: 't2', file: 'a.ts', side: 'base', startLine: 2, endLine: 2, snippet: 'old' },
+      { id: 't3', file: 'b.ts', side: undefined, startLine: undefined, endLine: undefined, snippet: undefined },
+      { id: 't4', file: undefined, side: undefined, startLine: undefined, endLine: undefined, snippet: undefined },
+    ],
+  );
+  assert.deepStrictEqual(data.threads[0].comments, [{ author: 'agent', body: 'hi', createdAt: undefined }]);
 });
 
-test('serializeReview round-trips and includes agent instructions', () => {
-  const data = { base: 'main', target: 'feat/x', threads: [] };
+test('parseReview gives agent threads without ids a stable, unique id', () => {
+  const text = JSON.stringify({ base: 'main', threads: [{ file: 'a.ts', startLine: 1, comments: [{ body: 'x' }] }, { id: 'dup', comments: [{ body: 'a' }] }, { id: 'dup', comments: [{ body: 'b' }] }] });
+  const [first, ...rest] = parseReview(text).threads;
+  assert.match(first.id, /^[0-9a-f]{8}$/);
+  assert.strictEqual(parseReview(text).threads[0].id, first.id);
+  assert.notStrictEqual(rest[0].id, rest[1].id);
+});
+
+test('threadStatus follows who spoke last', () => {
+  const thread = (authors: string[], resolved = false) => ({ id: 'x', resolved, comments: authors.map((author) => ({ author, body: '' })) });
+  assert.strictEqual(threadStatus(thread([REVIEWER])), 'awaitingAgent');
+  assert.strictEqual(threadStatus(thread([REVIEWER, 'agent'])), 'awaitingYou');
+  assert.strictEqual(threadStatus(thread(['agent'])), 'awaitingYou');
+  assert.strictEqual(threadStatus(thread(['agent'], true)), 'resolved');
+});
+
+test('serializeReview round-trips with instructions first and threads in a fixed key order', () => {
+  const data = parseReview(JSON.stringify({ base: 'main', target: 'feat/x', threads: [{ comments: [{ body: 'b' }], resolved: true, id: 'i' }] }));
   const text = serializeReview(data);
-  assert.ok(JSON.parse(text).agentInstructions);
+  const parsed = JSON.parse(text);
+  assert.deepStrictEqual(Object.keys(parsed), ['agentInstructions', 'title', 'description', 'base', 'target', 'threads']);
+  assert.deepStrictEqual(Object.keys(parsed.threads[0]), ['id', 'resolved', 'comments']);
   assert.deepStrictEqual(parseReview(text), data);
 });
 

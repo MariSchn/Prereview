@@ -1,19 +1,71 @@
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
-import { FilesView } from './filesView';
-import { ChangedFile, branches, git, repoRoot } from './git';
-import { Review, SCHEME, contentProvider } from './review';
+import { FileItem, FilesView } from './filesView';
+import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
+import { Thread, ThreadStatus, parseReview, threadStatus } from './model';
+import { Overview, confirmDelete } from './overview';
+import { Review, ReviewChange, SCHEME, contentProvider } from './review';
 
 const ACTIVE_KEY = 'prereview.activeReview';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const comments = new CommentsController();
+  const media = vscode.Uri.joinPath(context.extensionUri, 'media');
+  const comments = new CommentsController({
+    reviewer: vscode.Uri.joinPath(media, 'reviewer.svg'),
+    agent: vscode.Uri.joinPath(media, 'agent.svg'),
+  });
   const files = new FilesView();
-  const tree = vscode.window.createTreeView('prereview.files', { treeDataProvider: files });
+  const tree = vscode.window.createTreeView('prereview.files', { treeDataProvider: files, manageCheckboxStateManually: true });
+  const overview = new Overview(context.extensionUri, (thread) => (review ? openThread(review, thread) : Promise.resolve()));
+  const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  statusItem.command = 'prereview.openOverview';
   let review: Review | undefined;
   let listener: vscode.Disposable | undefined;
+  let counts = countStatuses([]);
+
+  const activeFile = (): ChangedFile | undefined => {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    const location = uri && review?.locationOf(uri);
+    return location ? review?.files.find((f) => f.path === location.file) : undefined;
+  };
+
+  const updateEditorContext = () => {
+    const file = activeFile();
+    const state = file && review?.viewState(file) === 'viewed' ? 'viewed' : file ? 'unviewed' : undefined;
+    vscode.commands.executeCommand('setContext', 'prereview.activeFile', state);
+  };
+
+  const updateUi = (change: ReviewChange) => {
+    files.refresh();
+    comments.render();
+    void overview.update();
+    const next = countStatuses(review?.data.threads ?? []);
+    if (review) {
+      const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
+      tree.description = review.title;
+      tree.message = review.files.length ? `${viewed} of ${review.files.length} files viewed` : 'No changes.';
+      statusItem.text = statusText(next);
+      statusItem.tooltip = `Prereview: ${review.title}`;
+      statusItem.show();
+      if (change.external && counts.awaitingAgent > 0 && next.awaitingAgent === 0 && next.awaitingYou > 0) {
+        vscode.window.showInformationMessage('The agent replied to all open threads.', 'Open Overview').then((choice) => {
+          if (choice) overview.show();
+        });
+      }
+    } else {
+      tree.description = undefined;
+      tree.message = undefined;
+      statusItem.hide();
+    }
+    tree.badge = next.awaitingYou
+      ? { value: next.awaitingYou, tooltip: `${next.awaitingYou} thread${next.awaitingYou === 1 ? '' : 's'} awaiting you` }
+      : undefined;
+    counts = next;
+    updateEditorContext();
+  };
 
   const setReview = (next: Review | undefined) => {
     listener?.dispose();
@@ -21,14 +73,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     review = next;
     files.review = next;
     comments.setReview(next);
-    const update = () => {
-      files.refresh();
-      comments.render();
-      tree.description = next?.title;
-      tree.message = next && !next.files.length ? 'No changes.' : undefined;
-    };
-    listener = next?.onDidChange(update);
-    update();
+    overview.setReview(next);
+    counts = countStatuses(next?.data.threads ?? []);
+    listener = next?.onDidChange(updateUi);
+    updateUi({ external: false });
     vscode.commands.executeCommand('setContext', 'prereview.active', !!next);
     context.workspaceState.update(ACTIVE_KEY, next?.filePath);
   };
@@ -42,66 +90,193 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     });
 
+  const fileArg = (arg?: FileItem | ChangedFile): ChangedFile | undefined => (arg ? ('kind' in arg ? arg.file : arg) : activeFile());
+
   context.subscriptions.push(
     comments,
     tree,
+    overview,
+    statusItem,
     { dispose: () => (listener?.dispose(), review?.dispose()) },
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, contentProvider),
-    command('prereview.startReview', async () => {
-      const next = await pickReview();
-      if (next) setReview(next);
+    vscode.window.registerFileDecorationProvider(files),
+    vscode.window.onDidChangeActiveTextEditor(updateEditorContext),
+    tree.onDidChangeCheckboxState(async (event) => {
+      for (const [node, state] of event.items) {
+        if (node.kind === 'file') await review?.setViewed(node.file, state === vscode.TreeItemCheckboxState.Checked);
+      }
     }),
-    command('prereview.openDiff', (file: ChangedFile) => review && openDiff(review, file)),
-    command('prereview.openAllChanges', () => review && openAllChanges(review)),
+    command('prereview.startReview', async () => {
+      const next = await pickReview(context.workspaceState);
+      if (!next) return;
+      setReview(next);
+      overview.show();
+    }),
+    command('prereview.openOverview', () => overview.show()),
+    command('prereview.openDiff', (arg: FileItem | ChangedFile) => {
+      const file = fileArg(arg);
+      if (review && file) return openDiff(review, file);
+    }),
+    command('prereview.openSinceViewed', (arg: FileItem | ChangedFile) => {
+      const file = fileArg(arg);
+      const uris = file && review?.sinceViewedUris(file);
+      if (file && uris) return vscode.commands.executeCommand('vscode.diff', ...uris, `${path.posix.basename(file.path)} (since viewed)`);
+    }),
+    command('prereview.openAllChanges', () => {
+      if (!review) return;
+      const dir = review.targetDir ?? review.root;
+      const resources = files.orderedFiles.map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review!.diffUris(f)]);
+      return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);
+    }),
+    command('prereview.markViewed', (arg?: FileItem | ChangedFile) => {
+      const file = fileArg(arg);
+      if (file) return review?.setViewed(file, true);
+    }),
+    command('prereview.markUnviewed', (arg?: FileItem | ChangedFile) => {
+      const file = fileArg(arg);
+      if (file) return review?.setViewed(file, false);
+    }),
     command('prereview.copyReviewPath', async () => {
       if (!review) return;
       await vscode.env.clipboard.writeText(review.filePath);
       vscode.window.showInformationMessage('Review path copied. Send it to your agent.');
     }),
     command('prereview.refresh', () => review?.refresh()),
+    command('prereview.finishReview', async () => {
+      if (!review) return;
+      const choice = await vscode.window.showWarningMessage(
+        `Finish the review of ${review.title}?`,
+        { modal: true, detail: `This deletes ${path.basename(review.filePath)} and all its comments.` },
+        'Finish Review',
+      );
+      if (choice !== 'Finish Review') return;
+      const finished = review;
+      setReview(undefined);
+      await finished.delete();
+    }),
     command('prereview.createThread', (reply: vscode.CommentReply) => comments.createThread(reply)),
     command('prereview.reply', (reply: vscode.CommentReply) => comments.reply(reply)),
     command('prereview.resolve', (thread: vscode.CommentThread) => comments.setResolved(thread, true)),
     command('prereview.unresolve', (thread: vscode.CommentThread) => comments.setResolved(thread, false)),
-    command('prereview.deleteComment', (comment: ReviewComment) => comments.deleteComment(comment)),
+    command('prereview.editComment', (comment: ReviewComment) => comments.editComment(comment)),
+    command('prereview.saveComment', (comment: ReviewComment) => comments.saveComment(comment)),
+    command('prereview.cancelEdit', () => comments.cancelEdit()),
+    command('prereview.deleteComment', async (comment: ReviewComment) => {
+      if (await confirmDelete()) await comments.deleteComment(comment);
+    }),
   );
 
   const saved = context.workspaceState.get<string>(ACTIVE_KEY);
-  if (saved && fs.existsSync(saved)) {
+  if (saved) {
     try {
-      setReview(await Review.load(saved));
-    } catch (e) {
-      vscode.window.showWarningMessage(`Prereview: could not restore review: ${(e as Error).message}`);
+      setReview(await Review.load(saved, context.workspaceState));
+    } catch {
+      context.workspaceState.update(ACTIVE_KEY, undefined);
     }
   }
 }
 
-async function pickReview(): Promise<Review | undefined> {
+function countStatuses(threads: Thread[]): Record<ThreadStatus, number> {
+  const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
+  for (const t of threads) counts[threadStatus(t)]++;
+  return counts;
+}
+
+function statusText(counts: Record<ThreadStatus, number>): string {
+  if (counts.awaitingYou) return `$(comment-unresolved) ${counts.awaitingYou} awaiting you`;
+  if (counts.awaitingAgent) return `$(comment-discussion) ${counts.awaitingAgent} awaiting agent`;
+  if (counts.resolved) return '$(pass) All threads resolved';
+  return '$(comment-discussion) Review';
+}
+
+function openDiff(review: Review, file: ChangedFile, selection?: vscode.Range) {
+  const [left, right] = review.diffUris(file);
+  const title = `${path.posix.basename(file.path)} (${review.title})`;
+  return vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true, selection });
+}
+
+async function openThread(review: Review, thread: Thread): Promise<void> {
+  const uri = review.threadUri(thread);
+  if (!uri || !thread.file) return;
+  const pos = review.position(thread);
+  const range = pos && new vscode.Range(pos.start - 1, 0, pos.end - 1, 0);
+  const file = review.files.find((f) => f.path === thread.file);
+  if (!file) {
+    await vscode.window.showTextDocument(uri, { selection: range });
+    return;
+  }
+  await openDiff(review, file, thread.side === 'base' ? undefined : range);
+  if (thread.side === 'base' && range) {
+    const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString());
+    editor?.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  }
+}
+
+async function pickReview(state: vscode.Memento): Promise<Review | undefined> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) throw new Error('Open a folder inside a git repository first.');
   const root = await repoRoot(folder.uri.fsPath);
+  const existing = await existingReviews(root);
+  if (existing.length) {
+    const picked = await vscode.window.showQuickPick(
+      [{ label: '$(add) New Review…' }, { label: 'Open reviews', kind: vscode.QuickPickItemKind.Separator }, ...existing],
+      { placeHolder: 'Open a review or start a new one' },
+    );
+    if (!picked) return undefined;
+    if ('filePath' in picked) return Review.load(picked.filePath, state);
+  }
   const refs = await branches(root);
   const preferred = ['main', 'master', 'origin/main', 'origin/master'].find((b) => refs.includes(b));
   const ordered = preferred ? [preferred, ...refs.filter((r) => r !== preferred)] : refs;
   const base = await vscode.window.showQuickPick(ordered, { placeHolder: 'Base branch to compare against' });
   if (!base) return undefined;
   const head = (await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+  const trees = await worktrees(root);
+  const elsewhere = (r: string) => trees.has(r) && trees.get(r) !== root;
+  const candidates = refs.filter((r) => r !== base).sort((a, b) => Number(elsewhere(b)) - Number(elsewhere(a)));
   const targets: (vscode.QuickPickItem & { target: string | null })[] = [
     { label: '$(edit) Working tree', description: `${head} + uncommitted changes`, target: null },
-    ...refs.filter((r) => r !== base).map((r) => ({ label: r, target: r })),
+    ...candidates.map((r) => ({
+      label: r,
+      description: elsewhere(r) ? `$(folder) worktree at ${tildify(trees.get(r)!)}, includes uncommitted changes` : undefined,
+      target: r,
+    })),
   ];
   const picked = await vscode.window.showQuickPick(targets, { placeHolder: `Compare ${base} with` });
   if (!picked) return undefined;
-  return Review.open(root, base, picked.target);
+  return Review.open(root, base, picked.target, state);
 }
 
-function openDiff(review: Review, file: ChangedFile) {
-  const [left, right] = review.diffUris(file);
-  const title = `${path.posix.basename(file.path)} (${review.title})`;
-  return vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true });
+async function existingReviews(root: string): Promise<(vscode.QuickPickItem & { filePath: string })[]> {
+  const dir = path.join(root, '.prereview');
+  const names = await fs.readdir(dir).catch(() => [] as string[]);
+  const items: (vscode.QuickPickItem & { filePath: string })[] = [];
+  for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
+    const filePath = path.join(dir, name);
+    try {
+      const data = parseReview(await fs.readFile(filePath, 'utf8'));
+      const pair = `${data.base} ↔ ${data.target ?? 'working tree'}`;
+      const counts = countStatuses(data.threads);
+      items.push({
+        label: data.title || pair,
+        description: data.title ? pair : undefined,
+        detail: [
+          counts.awaitingYou && `${counts.awaitingYou} awaiting you`,
+          counts.awaitingAgent && `${counts.awaitingAgent} awaiting agent`,
+          counts.resolved && `${counts.resolved} resolved`,
+        ]
+          .filter(Boolean)
+          .join(' · ') || 'No comments yet',
+        filePath,
+      });
+    } catch {
+      continue;
+    }
+  }
+  return items;
 }
 
-function openAllChanges(review: Review) {
-  const resources = review.files.map((f) => [vscode.Uri.file(path.join(review.root, f.path)), ...review.diffUris(f)]);
-  return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);
+function tildify(dir: string): string {
+  const home = os.homedir();
+  return dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir;
 }

@@ -1,3 +1,7 @@
+import { createHash } from 'crypto';
+
+export const REVIEWER = 'reviewer';
+
 export interface Comment {
   author: string;
   body: string;
@@ -6,29 +10,50 @@ export interface Comment {
 
 export interface Thread {
   id: string;
-  file: string;
-  startLine: number;
-  endLine: number;
-  snippet: string;
+  file?: string;
+  side?: 'base';
+  startLine?: number;
+  endLine?: number;
+  snippet?: string;
   resolved: boolean;
   comments: Comment[];
 }
 
 export interface ReviewData {
+  title: string;
+  description: string;
   base: string;
   target: string | null;
   threads: Thread[];
 }
 
+export type ThreadStatus = 'awaitingYou' | 'awaitingAgent' | 'resolved';
+
+export const STATUS_LABELS: Record<ThreadStatus, string> = {
+  awaitingYou: 'Awaiting you',
+  awaitingAgent: 'Awaiting agent',
+  resolved: 'Resolved',
+};
+
 export const AGENT_INSTRUCTIONS =
-  'This file is a local code review left with Prereview, like the comments on a GitHub pull request. ' +
-  '`base` is the branch the changes are compared against; `target` is the branch under review, or null if the review covers the uncommitted working tree. ' +
-  'Each entry in `threads` is a review comment on `file` (relative to the repository root), lines `startLine` to `endLine` (1-based) of the reviewed version; `snippet` is the code it was left on. ' +
-  'For every thread with `resolved: false`, address the feedback in the code (or decide not to), then append a reply to its `comments` array: ' +
+  'This file is a local code review left with Prereview, the local equivalent of a GitHub pull request. ' +
+  '`base` is the branch the changes are compared against; `target` is the branch under review, or null for the uncommitted working tree. ' +
+  'If `title` or `description` is empty, fill it in like a pull request: a short title and a markdown description of what changed and why. ' +
+  'Each entry in `threads` is a conversation. A thread with `file` and `startLine`/`endLine` (1-based) is about those lines and `snippet` is the code it was left on; ' +
+  'without lines it is about the whole file, and without `file` it is about the change as a whole. `"side": "base"` means the lines are in the old version of the file. ' +
+  'For every thread with `resolved: false` whose last comment is the reviewer\'s, address the feedback in the code (or decide not to), then append a reply to its `comments`: ' +
   '{"author": "agent", "body": "<what you changed, or why not>"}. If something is unclear, ask in a reply instead. ' +
-  'Do not resolve threads, add threads, or edit or delete existing comments; the reviewer does that. Skip resolved threads. ' +
-  'If `target` is a branch, commit your fixes to that branch so they show up in the review. ' +
+  'You may also open a thread to point the reviewer to something or ask a question by appending ' +
+  '{"id": "<unique id>", "file": "<path>", "startLine": <n>, "endLine": <n>, "resolved": false, "comments": [{"author": "agent", "body": "..."}]} to `threads` ' +
+  '(leave out the lines for a whole-file comment, or `file` for a general one). ' +
+  'Do not resolve threads or edit or delete existing comments; the reviewer does that. ' +
+  'Make your changes where `target` is checked out, or commit them to it. ' +
   'Keep this file valid JSON; the reviewer\'s editor picks up changes automatically.';
+
+export function threadStatus(thread: Thread): ThreadStatus {
+  if (thread.resolved) return 'resolved';
+  return thread.comments[thread.comments.length - 1]?.author === REVIEWER ? 'awaitingAgent' : 'awaitingYou';
+}
 
 export function reviewFileName(base: string, target: string | null): string {
   const slug = (s: string) => s.replace(/[^\w.-]+/g, '-');
@@ -39,26 +64,58 @@ export function parseReview(text: string): ReviewData {
   const raw = JSON.parse(text);
   if (typeof raw?.base !== 'string') throw new Error('missing "base"');
   const threads: Thread[] = [];
+  const ids = new Set<string>();
   for (const t of Array.isArray(raw.threads) ? raw.threads : []) {
-    if (typeof t?.id !== 'string' || typeof t.file !== 'string' || !Number.isInteger(t.startLine)) continue;
-    const comments: Comment[] = (Array.isArray(t.comments) ? t.comments : [])
+    const comments: Comment[] = (Array.isArray(t?.comments) ? t.comments : [])
       .filter((c: any) => typeof c?.body === 'string')
       .map((c: any) => ({ author: typeof c.author === 'string' ? c.author : 'agent', body: c.body, createdAt: c.createdAt }));
+    if (!comments.length) continue;
+    const file = typeof t.file === 'string' && t.file ? t.file : undefined;
+    const startLine = file && Number.isInteger(t.startLine) && t.startLine > 0 ? (t.startLine as number) : undefined;
+    let id = typeof t.id === 'string' && t.id ? t.id : hashId(`${file}:${startLine}:${comments[0].body}`);
+    if (ids.has(id)) id = `${id}-${threads.length}`;
+    ids.add(id);
     threads.push({
-      id: t.id,
-      file: t.file,
-      startLine: t.startLine,
-      endLine: Number.isInteger(t.endLine) ? t.endLine : t.startLine,
-      snippet: typeof t.snippet === 'string' ? t.snippet : '',
+      id,
+      file,
+      side: file && t.side === 'base' ? 'base' : undefined,
+      startLine,
+      endLine: startLine === undefined ? undefined : Number.isInteger(t.endLine) && t.endLine >= startLine ? t.endLine : startLine,
+      snippet: startLine !== undefined && typeof t.snippet === 'string' ? t.snippet : undefined,
       resolved: t.resolved === true,
       comments,
     });
   }
-  return { base: raw.base, target: typeof raw.target === 'string' ? raw.target : null, threads };
+  return {
+    title: typeof raw.title === 'string' ? raw.title : '',
+    description: typeof raw.description === 'string' ? raw.description : '',
+    base: raw.base,
+    target: typeof raw.target === 'string' ? raw.target : null,
+    threads,
+  };
 }
 
 export function serializeReview(data: ReviewData): string {
-  return JSON.stringify({ agentInstructions: AGENT_INSTRUCTIONS, ...data }, null, 2) + '\n';
+  const { title, description, base, target } = data;
+  const threads = data.threads.map(({ id, file, side, startLine, endLine, snippet, resolved, comments }) => ({
+    id,
+    file,
+    side,
+    startLine,
+    endLine,
+    snippet,
+    resolved,
+    comments,
+  }));
+  return JSON.stringify({ agentInstructions: AGENT_INSTRUCTIONS, title, description, base, target, threads }, null, 2) + '\n';
+}
+
+export function newId(): string {
+  return hashId(`${Date.now()}:${Math.random()}`);
+}
+
+function hashId(text: string): string {
+  return createHash('sha1').update(text).digest('hex').slice(0, 8);
 }
 
 export function locate(lines: string[], snippet: string, startLine: number): { start: number; end: number } | undefined {

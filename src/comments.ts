@@ -1,19 +1,24 @@
-import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
-import { Comment, Thread } from './model';
+import { Comment, REVIEWER, STATUS_LABELS, threadStatus } from './model';
 import { Review } from './review';
 
-const REVIEWER = 'reviewer';
+export interface AuthorIcons {
+  reviewer: vscode.Uri;
+  agent: vscode.Uri;
+}
 
 export class ReviewComment implements vscode.Comment {
-  readonly body: vscode.MarkdownString;
-  readonly mode = vscode.CommentMode.Preview;
+  body: string | vscode.MarkdownString;
+  mode = vscode.CommentMode.Preview;
   readonly author: vscode.CommentAuthorInformation;
+  readonly contextValue: string;
   readonly timestamp?: Date;
 
-  constructor(comment: Comment, readonly threadId: string, readonly index: number) {
+  constructor(comment: Comment, readonly threadId: string, readonly index: number, icons: AuthorIcons) {
+    const mine = comment.author === REVIEWER;
     this.body = new vscode.MarkdownString(comment.body);
-    this.author = { name: comment.author === REVIEWER ? 'You' : comment.author || 'agent' };
+    this.author = { name: mine ? 'You' : comment.author || 'agent', iconPath: mine ? icons.reviewer : icons.agent };
+    this.contextValue = mine ? 'reviewer' : 'agent';
     const time = Date.parse(comment.createdAt ?? '');
     if (!isNaN(time)) this.timestamp = new Date(time);
   }
@@ -23,17 +28,21 @@ export class CommentsController implements vscode.Disposable {
   private readonly controller = vscode.comments.createCommentController('prereview', 'Prereview');
   private readonly threads = new Map<string, vscode.CommentThread>();
   private review?: Review;
+  private editing?: string;
 
-  constructor() {
+  constructor(private readonly icons: AuthorIcons) {
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (doc) =>
-        this.review?.pathOf(doc.uri) === undefined ? [] : [new vscode.Range(0, 0, Math.max(doc.lineCount - 1, 0), 0)],
+        this.review?.locationOf(doc.uri)
+          ? { enableFileComments: true, ranges: [new vscode.Range(0, 0, Math.max(doc.lineCount - 1, 0), 0)] }
+          : undefined,
     };
   }
 
   setReview(review: Review | undefined): void {
     for (const thread of this.threads.values()) thread.dispose();
     this.threads.clear();
+    this.editing = undefined;
     this.review = review;
     this.render();
   }
@@ -43,27 +52,31 @@ export class CommentsController implements vscode.Disposable {
     if (!review) return;
     const seen = new Set<string>();
     for (const t of review.data.threads) {
+      const uri = review.threadUri(t);
+      if (!uri) continue;
       seen.add(t.id);
-      const uri = review.rightUri(t.file);
       const pos = review.position(t);
-      const range = new vscode.Range(Math.max(pos.start - 1, 0), 0, Math.max(pos.end - 1, 0), 0);
+      const range = pos && new vscode.Range(Math.max(pos.start - 1, 0), 0, Math.max(pos.end - 1, 0), 0);
+      const status = threadStatus(t);
       let thread = this.threads.get(t.id);
       if (thread && thread.uri.toString() !== uri.toString()) {
         thread.dispose();
         thread = undefined;
       }
       if (!thread) {
-        thread = this.controller.createCommentThread(uri, range, []);
-        thread.collapsibleState = t.resolved
-          ? vscode.CommentThreadCollapsibleState.Collapsed
-          : vscode.CommentThreadCollapsibleState.Expanded;
+        // An undefined range makes a whole-file thread; it can only be set when the thread is created.
+        thread = this.controller.createCommentThread(uri, range as vscode.Range, []);
         this.threads.set(t.id, thread);
       }
-      thread.range = range;
-      thread.comments = t.comments.map((c, i) => new ReviewComment(c, t.id, i));
+      if (range) thread.range = range;
+      if (this.editing !== t.id) thread.comments = t.comments.map((c, i) => new ReviewComment(c, t.id, i, this.icons));
+      const state = t.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
+      if (thread.state !== state) {
+        thread.collapsibleState = t.resolved ? vscode.CommentThreadCollapsibleState.Collapsed : vscode.CommentThreadCollapsibleState.Expanded;
+      }
+      thread.state = state;
       thread.contextValue = t.resolved ? 'resolved' : 'unresolved';
-      thread.state = t.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
-      thread.label = pos.outdated ? 'Outdated' : undefined;
+      thread.label = [STATUS_LABELS[status], pos?.outdated ? 'Outdated' : ''].filter(Boolean).join(' · ');
     }
     for (const [id, thread] of this.threads) {
       if (!seen.has(id)) {
@@ -75,64 +88,64 @@ export class CommentsController implements vscode.Disposable {
 
   async createThread(reply: vscode.CommentReply): Promise<void> {
     const draft = reply.thread;
-    const review = this.review;
-    const file = review?.pathOf(draft.uri);
-    if (!review || file === undefined) {
+    const location = this.review?.locationOf(draft.uri);
+    if (!this.review || !location) {
       draft.dispose();
       return;
     }
-    const doc = await vscode.workspace.openTextDocument(draft.uri);
-    const start = draft.range.start.line;
-    const end = draft.range.end.line;
-    const snippet = Array.from({ length: end - start + 1 }, (_, k) => doc.lineAt(start + k).text).join('\n');
-    await review.update((data) =>
-      data.threads.push({
-        id: randomUUID().slice(0, 8),
-        file,
-        startLine: start + 1,
-        endLine: end + 1,
-        snippet,
-        resolved: false,
-        comments: [newComment(reply.text)],
-      }),
+    const range = draft.range;
+    await this.review.addThread(
+      {
+        file: location.file,
+        side: location.side === 'base' ? 'base' : undefined,
+        startLine: range && range.start.line + 1,
+        endLine: range && range.end.line + 1,
+      },
+      reply.text,
     );
     draft.dispose();
   }
 
   async reply(reply: vscode.CommentReply): Promise<void> {
-    await this.updateThread(reply.thread, (t) => t.comments.push(newComment(reply.text)));
+    const id = this.idOf(reply.thread);
+    if (id) await this.review?.reply(id, reply.text);
   }
 
   async setResolved(thread: vscode.CommentThread, resolved: boolean): Promise<void> {
-    await this.updateThread(thread, (t) => (t.resolved = resolved));
-    thread.collapsibleState = resolved
-      ? vscode.CommentThreadCollapsibleState.Collapsed
-      : vscode.CommentThreadCollapsibleState.Expanded;
+    const id = this.idOf(thread);
+    if (id) await this.review?.setResolved(id, resolved);
+  }
+
+  editComment(comment: ReviewComment): void {
+    const thread = this.threads.get(comment.threadId);
+    if (!thread) return;
+    this.editing = comment.threadId;
+    thread.comments = thread.comments.map((c) => {
+      if (c === comment) c.mode = vscode.CommentMode.Editing;
+      return c;
+    });
+  }
+
+  async saveComment(comment: ReviewComment): Promise<void> {
+    const body = typeof comment.body === 'string' ? comment.body : comment.body.value;
+    this.editing = undefined;
+    await this.review?.editComment(comment.threadId, comment.index, body);
+  }
+
+  cancelEdit(): void {
+    this.editing = undefined;
+    this.render();
   }
 
   async deleteComment(comment: ReviewComment): Promise<void> {
-    await this.review?.update((data) => {
-      const t = data.threads.find((t) => t.id === comment.threadId);
-      if (!t) return;
-      t.comments.splice(comment.index, 1);
-      if (!t.comments.length) data.threads.splice(data.threads.indexOf(t), 1);
-    });
+    await this.review?.deleteComment(comment.threadId, comment.index);
   }
 
   dispose(): void {
     this.controller.dispose();
   }
 
-  private async updateThread(thread: vscode.CommentThread, fn: (t: Thread) => void) {
-    const id = [...this.threads].find(([, t]) => t === thread)?.[0];
-    if (!id) return;
-    await this.review?.update((data) => {
-      const t = data.threads.find((t) => t.id === id);
-      if (t) fn(t);
-    });
+  private idOf(thread: vscode.CommentThread): string | undefined {
+    return [...this.threads].find(([, t]) => t === thread)?.[0];
   }
-}
-
-function newComment(body: string): Comment {
-  return { author: REVIEWER, body, createdAt: new Date().toISOString() };
 }

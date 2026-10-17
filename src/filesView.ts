@@ -1,32 +1,73 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChangedFile } from './git';
+import { FileNode, TreeNode, buildTree, flatten } from './fileTree';
+import { ChangedFile, Status } from './git';
 import { Review } from './review';
 
-const STATUS = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed' };
+export const DECORATION_SCHEME = 'prereview-file';
 
-export class FilesView implements vscode.TreeDataProvider<ChangedFile> {
+const STATUS: Record<Status, [label: string, color: string]> = {
+  A: ['Added', 'gitDecoration.addedResourceForeground'],
+  M: ['Modified', 'gitDecoration.modifiedResourceForeground'],
+  D: ['Deleted', 'gitDecoration.deletedResourceForeground'],
+  R: ['Renamed', 'gitDecoration.renamedResourceForeground'],
+};
+
+export type FileItem = FileNode<ChangedFile>;
+
+export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>, vscode.FileDecorationProvider {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
+  private roots: TreeNode<ChangedFile>[] = [];
   review?: Review;
 
   refresh(): void {
+    this.roots = this.review ? buildTree(this.review.files) : [];
     this.changed.fire();
   }
 
-  getChildren(): ChangedFile[] {
-    return this.review?.files ?? [];
+  get orderedFiles(): ChangedFile[] {
+    return flatten(this.roots);
   }
 
-  getTreeItem(file: ChangedFile): vscode.TreeItem {
+  getChildren(node?: TreeNode<ChangedFile>): TreeNode<ChangedFile>[] {
+    if (!node) return this.roots;
+    return node.kind === 'folder' ? node.children : [];
+  }
+
+  getTreeItem(node: TreeNode<ChangedFile>): vscode.TreeItem {
+    if (node.kind === 'folder') {
+      const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Expanded);
+      item.id = `folder:${node.path}`;
+      item.resourceUri = vscode.Uri.from({ scheme: DECORATION_SCHEME, path: '/' + node.path });
+      item.iconPath = vscode.ThemeIcon.Folder;
+      return item;
+    }
     const review = this.review!;
-    const item = new vscode.TreeItem(path.posix.basename(file.path));
-    const dir = path.posix.dirname(file.path);
+    const file = node.file;
+    const state = review.viewState(file);
     const open = review.data.threads.filter((t) => t.file === file.path && !t.resolved).length;
-    item.description = [dir === '.' ? '' : dir, file.status, open ? `${open} open` : ''].filter(Boolean).join(' · ');
-    item.tooltip = `${file.path} (${STATUS[file.status]}${file.status === 'R' ? ` from ${file.oldPath}` : ''})`;
-    item.resourceUri = vscode.Uri.file(path.join(review.root, file.path));
-    item.command = { command: 'prereview.openDiff', title: 'Open Diff', arguments: [file] };
+    const stats = file.added === undefined ? 'binary' : `+${file.added} −${file.deleted}`;
+    const item = new vscode.TreeItem(path.posix.basename(file.path));
+    item.id = `file:${file.path}`;
+    item.resourceUri = vscode.Uri.from({ scheme: DECORATION_SCHEME, path: '/' + file.path, query: file.status });
+    item.description = [state === 'updated' ? 'changed since viewed' : '', stats, open ? `${open} open` : ''].filter(Boolean).join(' · ');
+    item.tooltip = [
+      `${file.path} (${STATUS[file.status][0]}${file.status === 'R' ? ` from ${file.oldPath}` : ''})`,
+      open ? `${open} open thread${open === 1 ? '' : 's'}` : '',
+      state === 'updated' ? 'Changed since you marked it as viewed' : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    item.checkboxState = state === 'viewed' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+    item.contextValue = state === 'updated' ? 'file-updated' : 'file';
+    item.command = { command: 'prereview.openDiff', title: 'Open Diff', arguments: [node] };
     return item;
+  }
+
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (uri.scheme !== DECORATION_SCHEME || !(uri.query in STATUS)) return undefined;
+    const [label, color] = STATUS[uri.query as Status];
+    return { badge: uri.query, color: new vscode.ThemeColor(color), tooltip: label };
   }
 }
