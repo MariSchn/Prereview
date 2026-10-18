@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
-import { REVIEWER, Thread, ThreadStatus, threadStatus } from './model';
+import { REVIEWER, Thread, ThreadStatus, authorName, threadStatus } from './model';
 import { Position, Review } from './review';
 
 interface CommentView {
@@ -80,7 +80,7 @@ export class Overview implements vscode.Disposable {
   async update(): Promise<void> {
     const version = ++this.version;
     if (!this.panel || !this.review) return;
-    const state = await this.state(this.review, this.panel.webview);
+    const state = await this.state(this.review);
     if (version !== this.version || !this.panel) return;
     this.panel.title = `Review: ${state.title}`;
     await this.panel.webview.postMessage({ type: 'state', state });
@@ -122,8 +122,7 @@ export class Overview implements vscode.Disposable {
     }
   }
 
-  private async state(review: Review, webview: vscode.Webview) {
-    const media = vscode.Uri.joinPath(this.extensionUri, 'media');
+  private async state(review: Review) {
     const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
     const threads: ThreadView[] = [];
     for (const t of review.data.threads) {
@@ -140,7 +139,7 @@ export class Overview implements vscode.Disposable {
         snippet: pos && t.snippet !== undefined ? { start: pos.start, lines: t.snippet.split('\n') } : undefined,
         comments: await Promise.all(
           t.comments.map(async (c) => ({
-            author: c.author === REVIEWER ? 'You' : c.author,
+            author: authorName(c.author),
             mine: c.author === REVIEWER,
             time: c.createdAt,
             html: await this.markdown(c.body),
@@ -162,10 +161,6 @@ export class Overview implements vscode.Disposable {
       counts,
       description: data.description ? await this.markdown(data.description) : undefined,
       threads,
-      icons: {
-        reviewer: webview.asWebviewUri(vscode.Uri.joinPath(media, 'reviewer.svg')).toString(),
-        agent: webview.asWebviewUri(vscode.Uri.joinPath(media, 'agent.svg')).toString(),
-      },
     };
   }
 

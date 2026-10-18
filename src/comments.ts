@@ -1,10 +1,19 @@
 import * as vscode from 'vscode';
-import { Comment, REVIEWER, STATUS_LABELS, threadStatus } from './model';
+import { Comment, REVIEWER, STATUS_LABELS, authorName, threadStatus } from './model';
 import { Review } from './review';
 
 export interface AuthorIcons {
   reviewer: vscode.Uri;
   agent: vscode.Uri;
+}
+
+function authorIcons(media: vscode.Uri): AuthorIcons {
+  const kind = vscode.window.activeColorTheme.kind;
+  const variant = kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight ? 'light' : 'dark';
+  return {
+    reviewer: vscode.Uri.joinPath(media, `reviewer-${variant}.svg`),
+    agent: vscode.Uri.joinPath(media, `agent-${variant}.svg`),
+  };
 }
 
 export class ReviewComment implements vscode.Comment {
@@ -17,7 +26,7 @@ export class ReviewComment implements vscode.Comment {
   constructor(comment: Comment, readonly threadId: string, readonly index: number, icons: AuthorIcons) {
     const mine = comment.author === REVIEWER;
     this.body = new vscode.MarkdownString(comment.body);
-    this.author = { name: mine ? 'You' : comment.author || 'agent', iconPath: mine ? icons.reviewer : icons.agent };
+    this.author = { name: authorName(comment.author), iconPath: mine ? icons.reviewer : icons.agent };
     this.contextValue = mine ? 'reviewer' : 'agent';
     const time = Date.parse(comment.createdAt ?? '');
     if (!isNaN(time)) this.timestamp = new Date(time);
@@ -27,10 +36,17 @@ export class ReviewComment implements vscode.Comment {
 export class CommentsController implements vscode.Disposable {
   private readonly controller = vscode.comments.createCommentController('prereview', 'Prereview');
   private readonly threads = new Map<string, vscode.CommentThread>();
+  private readonly themeListener: vscode.Disposable;
   private review?: Review;
   private editing?: string;
+  private icons: AuthorIcons;
 
-  constructor(private readonly icons: AuthorIcons) {
+  constructor(media: vscode.Uri) {
+    this.icons = authorIcons(media);
+    this.themeListener = vscode.window.onDidChangeActiveColorTheme(() => {
+      this.icons = authorIcons(media);
+      this.render();
+    });
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (doc) =>
         this.review?.locationOf(doc.uri)
@@ -142,6 +158,7 @@ export class CommentsController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.themeListener.dispose();
     this.controller.dispose();
   }
 

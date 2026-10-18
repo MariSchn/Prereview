@@ -39,6 +39,37 @@
     return el;
   }
 
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const AVATAR_GLYPHS = {
+    reviewer: [
+      'M8 3.7a2.6 2.6 0 1 1 0 5.2 2.6 2.6 0 0 1 0-5.2z',
+      'M3.4 13.1C4.2 11 5.9 9.9 8 9.9s3.8 1.1 4.6 3.2A7.4 7.4 0 0 1 8 15a7.4 7.4 0 0 1-4.6-1.9z',
+    ],
+    agent: [
+      'M7 3.5c.4 2.6 1.4 3.6 4 4-2.6.4-3.6 1.4-4 4-.4-2.6-1.4-3.6-4-4 2.6-.4 3.6-1.4 4-4z',
+      'M11.4 9.6c.2 1.2.6 1.6 1.8 1.8-1.2.2-1.6.6-1.8 1.8-.2-1.2-.6-1.6-1.8-1.8 1.2-.2 1.6-.6 1.8-1.8z',
+    ],
+  };
+
+  function svg(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+    return el;
+  }
+
+  function avatar(mine, small) {
+    const kind = mine ? 'reviewer' : 'agent';
+    const el = svg('svg', { class: `avatar ${kind}${small ? ' small' : ''}`, viewBox: '0 0 16 16', 'aria-hidden': 'true' });
+    el.append(svg('circle', { class: 'bg', cx: 8, cy: 8, r: 8 }));
+    for (const d of AVATAR_GLYPHS[kind]) el.append(svg('path', { class: 'fg', d }));
+    return el;
+  }
+
+  function filePath(file) {
+    const slash = file.lastIndexOf('/');
+    return [slash >= 0 ? h('span', { class: 'dir' }, file.slice(0, slash + 1)) : null, h('span', { class: 'base' }, file.slice(slash + 1))];
+  }
+
   function button(label, kind, onclick) {
     return h('button', { class: kind, type: 'button', onclick }, label);
   }
@@ -105,7 +136,7 @@
   function header() {
     const s = state;
     const counts = GROUPS.filter(([status]) => s.counts[status]).map(([status, label]) =>
-      h('span', { class: `chip ${status}` }, h('span', { class: 'dot' }), `${s.counts[status]} ${label.toLowerCase()}`),
+      h('span', { class: `stat ${status}` }, h('span', { class: 'dot' }), h('strong', {}, s.counts[status]), label.toLowerCase()),
     );
     return h(
       'header',
@@ -117,19 +148,19 @@
         s.titleFromAgent
           ? [h('code', { class: 'branch' }, s.base), h('span', {}, '←'), h('code', { class: 'branch' }, s.target)]
           : null,
-        s.worktree ? h('span', { title: `Checked out in ${s.worktree}` }, 'worktree') : null,
-        s.titleFromAgent || s.worktree ? h('span', {}, '·') : null,
+        s.worktree ? h('span', { title: `Checked out in ${s.worktree}` }, 'in worktree') : null,
+        s.titleFromAgent || s.worktree ? h('span', { class: 'sep' }, '·') : null,
         h('span', {}, plural(s.files, 'file')),
         h('span', { class: 'added' }, `+${s.added}`),
         h('span', { class: 'deleted' }, `−${s.deleted}`),
       ),
-      counts.length ? h('div', { class: 'chips' }, counts) : null,
       h(
         'div',
-        { class: 'actions' },
-        button('Copy path for agent', 'primary', () => post({ type: 'command', name: 'copyReviewPath' })),
+        { class: 'toolbar' },
+        h('div', { class: 'summary' }, counts.length ? counts : h('span', { class: 'stat' }, 'No threads yet')),
+        button('Finish review', 'ghost danger', () => post({ type: 'command', name: 'finishReview' })),
         button('Open all changes', 'secondary', () => post({ type: 'command', name: 'openAllChanges' })),
-        button('Finish review', 'secondary', () => post({ type: 'command', name: 'finishReview' })),
+        button('Copy path for agent', 'primary', () => post({ type: 'command', name: 'copyReviewPath' })),
       ),
     );
   }
@@ -141,9 +172,9 @@
       h(
         'div',
         { class: 'card-head' },
-        h('img', { class: 'avatar small', src: state.icons.agent, alt: '' }),
-        h('span', { class: 'author' }, 'agent'),
-        h('span', { class: 'muted' }, 'description'),
+        avatar(false, true),
+        h('span', { class: 'author' }, 'Agent'),
+        h('span', { class: 'muted' }, 'wrote a description'),
       ),
       state.description
         ? h('div', { class: 'card-body markdown', html: state.description })
@@ -164,8 +195,16 @@
     return GROUPS.map(([status, label]) => {
       const threads = state.threads.filter((t) => t.status === status);
       if (!threads.length) return null;
-      const heading = h('h2', {}, label, h('span', { class: 'count' }, threads.length));
-      if (status !== 'resolved') return h('section', { class: 'group' }, heading, threads.map(thread));
+      const collapsible = status === 'resolved';
+      const heading = h(
+        'h2',
+        { class: `group-head ${status}` },
+        collapsible ? h('span', { class: 'chevron' }) : null,
+        h('span', { class: 'dot' }),
+        label,
+        h('span', { class: 'count' }, threads.length),
+      );
+      if (!collapsible) return h('section', { class: 'group' }, heading, threads.map(thread));
       return h(
         'details',
         {
@@ -185,10 +224,10 @@
   function thread(t) {
     return h(
       'article',
-      { class: `thread ${t.status}` },
+      { class: `card thread ${t.status}` },
       h(
         'div',
-        { class: 'thread-head' },
+        { class: 'card-head' },
         t.file
           ? h(
               'a',
@@ -201,10 +240,10 @@
                   post({ type: 'open', id: t.id });
                 },
               },
-              t.file,
+              filePath(t.file),
             )
           : h('span', { class: 'location general' }, 'General comment'),
-        t.where ? h('span', { class: 'muted' }, t.where) : null,
+        t.where ? h('span', { class: 'where' }, t.where) : null,
         h('span', { class: 'spacer' }),
         t.outdated ? h('span', { class: 'pill outdated', title: 'The code this comment was left on has changed' }, 'Outdated') : null,
       ),
@@ -233,7 +272,7 @@
     return h(
       'div',
       { class: 'comment' },
-      h('img', { class: 'avatar', src: c.mine ? state.icons.reviewer : state.icons.agent, alt: '' }),
+      avatar(c.mine),
       h(
         'div',
         { class: 'comment-main' },
@@ -241,7 +280,7 @@
           'div',
           { class: 'comment-head' },
           h('span', { class: 'author' }, c.author),
-          c.time ? h('span', { class: 'muted', title: new Date(c.time).toLocaleString() }, ago(c.time)) : null,
+          c.time ? h('span', { class: 'time', title: new Date(c.time).toLocaleString() }, ago(c.time)) : null,
           h('span', { class: 'spacer' }),
           isEditing
             ? null
@@ -319,9 +358,13 @@
     return h(
       'section',
       { class: 'new-comment' },
-      h('h2', {}, 'General comment'),
-      area,
-      h('div', { class: 'buttons' }, h('span', { class: 'hint muted' }, '⌘/Ctrl + Enter to send'), button('Comment', 'primary', send)),
+      avatar(true),
+      h(
+        'div',
+        { class: 'composer' },
+        area,
+        h('div', { class: 'buttons' }, h('span', { class: 'hint muted' }, '⌘/Ctrl + Enter to send'), button('Comment', 'primary', send)),
+      ),
     );
   }
 })();
