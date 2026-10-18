@@ -19,7 +19,9 @@ export function git(cwd: string, args: string[], input?: string): Promise<string
       if (err) reject(new Error(stderr.trim() || err.message));
       else resolve(stdout);
     });
-    child.stdin?.end(input ?? '');
+    // git may exit before reading stdin; its result is reported by the callback above
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(input);
   });
 }
 
