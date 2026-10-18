@@ -20,11 +20,12 @@ interface ThreadView {
   where: string;
   outdated: boolean;
   base: boolean;
-  snippet?: { start: number; lines: string[] };
+  snippet?: { start: number; focus: [number, number]; lines: string[] };
   comments: CommentView[];
 }
 
-const COMMANDS = ['copyReviewPath', 'openAllChanges', 'finishReview'];
+const COMMANDS = ['openAllChanges', 'finishReview'];
+const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
   return (await vscode.window.showWarningMessage('Delete this comment?', { modal: true }, 'Delete')) === 'Delete';
@@ -56,7 +57,7 @@ export class Overview implements vscode.Disposable {
       retainContextWhenHidden: true,
       localResourceRoots: [media],
     });
-    this.panel.iconPath = { light: vscode.Uri.joinPath(media, 'icon-light.svg'), dark: vscode.Uri.joinPath(media, 'icon-dark.svg') };
+    this.panel.iconPath = this.icon(false);
     const webview = this.panel.webview;
     const nonce = randomBytes(16).toString('hex');
     const asset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(media, name));
@@ -86,6 +87,7 @@ export class Overview implements vscode.Disposable {
     const state = await this.state(this.review);
     if (version !== this.version || !this.panel) return;
     this.panel.title = `Review: ${state.title}`;
+    this.panel.iconPath = this.icon(state.counts.awaitingYou > 0);
     await this.panel.webview.postMessage({ type: 'state', state });
   }
 
@@ -122,6 +124,8 @@ export class Overview implements vscode.Disposable {
       case 'command':
         if (COMMANDS.includes(message.name)) await vscode.commands.executeCommand(`prereview.${message.name}`);
         return;
+      case 'copyPath':
+        return vscode.env.clipboard.writeText(review.filePath);
       case 'openFile': {
         const file = review.files.find((f) => f.path === message.path);
         if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
@@ -138,10 +142,27 @@ export class Overview implements vscode.Disposable {
   private async state(review: Review) {
     const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
     const threads: ThreadView[] = [];
+    const sources = new Map<string, Promise<string[] | undefined>>();
     for (const t of review.data.threads) {
       const status = threadStatus(t);
       counts[status]++;
       const pos = review.position(t);
+      let snippet: ThreadView['snippet'];
+      if (pos && t.file && t.snippet !== undefined) {
+        const key = `${t.side ?? 'head'}:${t.file}`;
+        if (!sources.has(key)) sources.set(key, review.lines(t.file, t.side));
+        const lines = pos.outdated ? undefined : await sources.get(key);
+        let start = pos.start;
+        let end = pos.end;
+        if (lines) {
+          start = Math.max(1, start - CONTEXT);
+          end = Math.min(lines.length, end + CONTEXT);
+          while (start < pos.start && !lines[start - 1].trim()) start++;
+          while (end > pos.end && !lines[end - 1].trim()) end--;
+        }
+        const code = lines ? lines.slice(start - 1, end).join('\n') : t.snippet;
+        snippet = { start, focus: [pos.start, pos.end], lines: await this.highlight(t.file, code) };
+      }
       threads.push({
         id: t.id,
         status,
@@ -149,7 +170,7 @@ export class Overview implements vscode.Disposable {
         where: where(t, pos),
         outdated: !!pos?.outdated,
         base: t.side === 'base',
-        snippet: pos && t.snippet !== undefined && t.file ? { start: pos.start, lines: await this.highlight(t.file, t.snippet) } : undefined,
+        snippet,
         comments: await Promise.all(
           t.comments.map(async (c) => ({
             author: authorName(c.author),
@@ -183,6 +204,11 @@ export class Overview implements vscode.Disposable {
       description: data.description ? await this.markdown(data.description) : undefined,
       threads,
     };
+  }
+
+  private icon(attention: boolean): { light: vscode.Uri; dark: vscode.Uri } {
+    const uri = (theme: string) => vscode.Uri.joinPath(this.extensionUri, 'media', `icon${attention ? '-attention' : ''}-${theme}.svg`);
+    return { light: uri('light'), dark: uri('dark') };
   }
 
   private async highlight(file: string, snippet: string): Promise<string[]> {

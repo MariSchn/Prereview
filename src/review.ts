@@ -353,7 +353,7 @@ export class Review implements vscode.Disposable {
     this.positions = positions;
   }
 
-  private async lines(file: string, side?: 'base'): Promise<string[] | undefined> {
+  async lines(file: string, side?: 'base'): Promise<string[] | undefined> {
     try {
       let text: string;
       if (side === 'base') {

@@ -14,11 +14,17 @@
   };
   const saved = vscode.getState() || { resolvedOpen: false };
   const seen = new Set();
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let primed = false;
+  let scrolled = false;
   let jumps = 0;
   let state = null;
   let editing = null;
   let focusKey = null;
+  const titleObserver = new IntersectionObserver(([entry]) => {
+    scrolled = !entry.isIntersecting && entry.boundingClientRect.top < 0;
+    app.querySelector('.topbar')?.classList.toggle('visible', scrolled);
+  });
 
   window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'state') {
@@ -95,6 +101,16 @@
     const el = svg('svg', { class: `avatar ${kind}${small ? ' small' : ''}`, viewBox: '0 0 16 16', 'aria-hidden': 'true' });
     el.append(svg('circle', { class: 'bg', cx: 8, cy: 8, r: 7.7 }));
     for (const d of AVATAR_GLYPHS[kind]) el.append(svg('path', { class: 'fg', d }));
+    return el;
+  }
+
+  function emptyArt() {
+    const el = svg('svg', { class: 'empty-art', viewBox: '0 0 76 56', 'aria-hidden': 'true' });
+    el.innerHTML =
+      '<path class="you" d="M9 4h30a5 5 0 0 1 5 5v14a5 5 0 0 1-5 5H20l-8 7v-7H9a5 5 0 0 1-5-5V9a5 5 0 0 1 5-5z"/>' +
+      '<path class="you line" d="M12 12.5h22M12 19.5h14"/>' +
+      '<path class="agent" d="M37 18h30a5 5 0 0 1 5 5v14a5 5 0 0 1-5 5h-3v7l-8-7H37a5 5 0 0 1-5-5V23a5 5 0 0 1 5-5z"/>' +
+      '<path class="agent line" d="M40 26.5h24M40 33.5h16"/>';
     return el;
   }
 
@@ -176,11 +192,32 @@
       drafts.set(key, area.value);
       if (area === document.activeElement) focused = { key, start: area.selectionStart, end: area.selectionEnd };
     }
+    const before = new Map();
+    for (const el of app.querySelectorAll('[data-flip]')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.height) before.set(el.dataset.flip, rect.top);
+    }
+    const animate = primed && !reducedMotion.matches;
     app.replaceChildren(
+      topbar(),
       header(),
       h('div', { class: 'layout' }, h('div', { class: 'content' }, description(), ...groups(), newComment()), rail()),
     );
     primed = true;
+    titleObserver.disconnect();
+    titleObserver.observe(app.querySelector('.title'));
+    if (animate) {
+      for (const el of app.querySelectorAll('[data-flip]')) {
+        const rect = el.getBoundingClientRect();
+        if (!rect.height) continue;
+        const top = before.get(el.dataset.flip);
+        if (top === undefined) {
+          el.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 280, easing: 'ease-out' });
+        } else if (Math.abs(top - rect.top) > 1) {
+          el.animate([{ transform: `translateY(${top - rect.top}px)` }, { transform: 'none' }], { duration: 380, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+        }
+      }
+    }
     for (const area of app.querySelectorAll('textarea[data-key]')) {
       const key = area.getAttribute('data-key');
       if (drafts.has(key)) {
@@ -211,7 +248,7 @@
         h(
           'div',
           { class: 'actions' },
-          button('Copy path for agent', 'primary', command('copyReviewPath'), 'copy'),
+          copyButton('primary'),
           button('Open all changes', 'secondary', command('openAllChanges'), 'diff'),
           button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
         ),
@@ -241,20 +278,63 @@
     );
   }
 
+  function copyButton(kind) {
+    let reset;
+    const el = button(
+      'Copy path for agent',
+      kind,
+      () => {
+        post({ type: 'copyPath' });
+        el.style.minWidth = `${el.offsetWidth}px`;
+        el.replaceChildren(icon('check'), 'Copied');
+        clearTimeout(reset);
+        reset = setTimeout(() => el.replaceChildren(icon('copy'), 'Copy path for agent'), 1600);
+      },
+      'copy',
+    );
+    return el;
+  }
+
+  function status() {
+    const { counts, threads } = state;
+    if (counts.awaitingYou) {
+      const waiting = threads.filter((t) => t.status === 'awaitingYou');
+      const text = `${plural(counts.awaitingYou, 'thread')} ${counts.awaitingYou === 1 ? 'needs' : 'need'} your reply.`;
+      return ['awaitingYou', 'Your turn', text, () => button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length].id))];
+    }
+    if (counts.awaitingAgent) return ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.', () => copyButton('secondary')];
+    if (counts.resolved) {
+      return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', () => button('Finish review', 'secondary', command('finishReview'), 'finish')];
+    }
+    return ['idle', 'Ready for review', 'Open the changes and comment on any line.', () => button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
+  }
+
+  function statusIcon(tone) {
+    return icon(tone === 'idle' ? 'comment' : tone);
+  }
+
+  function topbar() {
+    const [tone, title] = status();
+    return h(
+      'div',
+      { class: `topbar${scrolled ? ' visible' : ''}` },
+      h(
+        'div',
+        { class: 'topbar-inner' },
+        h('span', { class: `topbar-status ${tone}` }, statusIcon(tone), title),
+        h('span', { class: 'topbar-title' }, state.title),
+        copyButton('primary'),
+      ),
+    );
+  }
+
   function rail() {
     return h('aside', { class: 'rail' }, statusCard(), filesCard());
   }
 
   function statusCard() {
     const { counts, threads, files } = state;
-    const waiting = threads.filter((t) => t.status === 'awaitingYou');
-    const [tone, title, text, action] = counts.awaitingYou
-      ? ['awaitingYou', 'Your turn', `${plural(counts.awaitingYou, 'thread')} ${counts.awaitingYou === 1 ? 'needs' : 'need'} your reply.`, button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length].id))]
-      : counts.awaitingAgent
-        ? ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.', button('Copy path for agent', 'secondary', command('copyReviewPath'), 'copy')]
-        : counts.resolved
-          ? ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', button('Finish review', 'secondary', command('finishReview'), 'finish')]
-          : ['idle', 'Ready for review', 'Open the changes and comment on any line.', button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
+    const [tone, title, text, action] = status();
     const viewed = files.filter((f) => f.viewed === 'viewed').length;
     const updated = files.filter((f) => f.viewed === 'updated').length;
     return h(
@@ -263,10 +343,10 @@
       h(
         'div',
         { class: 'status-main' },
-        h('span', { class: 'status-icon' }, icon(tone === 'idle' ? 'comment' : tone)),
+        h('span', { class: 'status-icon' }, statusIcon(tone)),
         h('div', { class: 'status-text' }, h('strong', {}, title), h('span', { class: 'muted' }, text)),
       ),
-      h('div', { class: 'status-action' }, action),
+      h('div', { class: 'status-action' }, action()),
       threads.length || files.length
         ? h(
             'div',
@@ -398,8 +478,8 @@
       return [
         h(
           'div',
-          { class: 'empty-state' },
-          h('span', { class: 'empty-icon' }, icon('comment')),
+          { class: 'empty-state', 'data-flip': 'empty' },
+          emptyArt(),
           h('strong', {}, 'No comments yet'),
           h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
         ),
@@ -411,7 +491,7 @@
       const collapsible = status === 'resolved';
       const heading = h(
         'h2',
-        { class: `group-head ${status}` },
+        { class: `group-head ${status}`, 'data-flip': `group:${status}` },
         icon(status),
         h('span', {}, label),
         h('span', { class: 'count' }, threads.length),
@@ -439,7 +519,7 @@
     const resolved = t.status === 'resolved';
     return h(
       'article',
-      { class: `card thread ${t.status}`, 'data-id': t.id },
+      { class: `card thread ${t.status}`, 'data-id': t.id, 'data-flip': `${t.id}:${t.status}` },
       h(
         'div',
         { class: 'card-head' },
@@ -479,10 +559,12 @@
   function snippet(t) {
     return h(
       'div',
-      { class: `snippet${t.base ? ' base' : ''}` },
-      t.snippet.lines.map((line, i) =>
-        h('div', { class: 'line' }, h('span', { class: 'ln' }, t.snippet.start + i), h('span', { class: 'code', html: line || ' ' })),
-      ),
+      { class: `snippet${t.base ? ' base' : ''}${t.snippet.lines.length > t.snippet.focus[1] - t.snippet.focus[0] + 1 ? ' context' : ''}` },
+      t.snippet.lines.map((line, i) => {
+        const n = t.snippet.start + i;
+        const focus = n >= t.snippet.focus[0] && n <= t.snippet.focus[1];
+        return h('div', { class: focus ? 'line focus' : 'line' }, h('span', { class: 'ln' }, n), h('span', { class: 'code', html: line || ' ' }));
+      }),
     );
   }
 
@@ -561,8 +643,13 @@
     return h(
       'div',
       { class: 'reply-box' },
-      area,
-      h('div', { class: 'buttons' }, h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'), button('Reply', 'primary', send)),
+      avatar(true),
+      h(
+        'div',
+        { class: 'reply-main' },
+        area,
+        h('div', { class: 'buttons' }, h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'), button('Reply', 'primary', send)),
+      ),
     );
   }
 
@@ -578,7 +665,7 @@
     onSubmit(area, send);
     return h(
       'section',
-      { class: 'new-comment' },
+      { class: 'new-comment', 'data-flip': 'composer' },
       avatar(true),
       h(
         'div',
