@@ -45,7 +45,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (review) {
       const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
       tree.description = review.title;
-      tree.message = review.files.length ? `${viewed} of ${review.files.length} files viewed` : 'No changes.';
+      tree.message = review.files.length ? `${viewed} of ${review.files.length} files viewed` : undefined;
       statusItem.text = statusText(next);
       statusItem.tooltip = `Prereview: ${review.title}`;
       statusItem.show();
@@ -61,6 +61,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     counts = next;
     updateEditorContext();
+    vscode.commands.executeCommand('setContext', 'prereview.noChanges', !!review && review.files.length === 0);
   };
 
   const updateBadge = () => {
@@ -146,6 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.openAllChanges', () => {
       if (!review) return;
+      if (!review.files.length) return overview.show();
       const dir = review.targetDir ?? review.root;
       const resources = files.orderedFiles.map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review!.diffUris(f)]);
       return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);

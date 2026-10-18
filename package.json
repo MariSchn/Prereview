@@ -78,7 +78,13 @@
       },
       {
         "view": "prereview.files",
+        "when": "!prereview.active",
         "contents": "No active review. Pick one under Reviews or start a new one."
+      },
+      {
+        "view": "prereview.files",
+        "when": "prereview.noChanges",
+        "contents": "No changes in this review.\nThe two sides match, so there is nothing to comment on yet.\n[Open Overview](command:prereview.openOverview)\n[$(refresh) Refresh](command:prereview.refresh)"
       }
     ],
     "commands": [
@@ -195,7 +201,7 @@
         },
         {
           "command": "prereview.openAllChanges",
-          "when": "view == prereview.files && prereview.active",
+          "when": "view == prereview.files && prereview.active && !prereview.noChanges",
           "group": "navigation@2"
         },
         {
@@ -343,7 +349,7 @@
         },
         {
           "command": "prereview.openAllChanges",
-          "when": "prereview.active"
+          "when": "prereview.active && !prereview.noChanges"
         },
         {
           "command": "prereview.copyReviewPath",

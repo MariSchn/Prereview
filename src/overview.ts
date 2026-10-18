@@ -24,7 +24,7 @@ interface ThreadView {
   comments: CommentView[];
 }
 
-const COMMANDS = ['openAllChanges', 'finishReview'];
+const COMMANDS = ['openAllChanges', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
