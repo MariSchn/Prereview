@@ -1,5 +1,7 @@
 import { randomBytes } from 'crypto';
+import * as path from 'path';
 import * as vscode from 'vscode';
+import { buildTree, flatten } from './fileTree';
 import { REVIEWER, Thread, ThreadStatus, authorName, threadStatus } from './model';
 import { Position, Review } from './review';
 
@@ -54,6 +56,7 @@ export class Overview implements vscode.Disposable {
       retainContextWhenHidden: true,
       localResourceRoots: [media],
     });
+    this.panel.iconPath = { light: vscode.Uri.joinPath(media, 'icon-light.svg'), dark: vscode.Uri.joinPath(media, 'icon-dark.svg') };
     const webview = this.panel.webview;
     const nonce = randomBytes(16).toString('hex');
     const asset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(media, name));
@@ -119,6 +122,16 @@ export class Overview implements vscode.Disposable {
       case 'command':
         if (COMMANDS.includes(message.name)) await vscode.commands.executeCommand(`prereview.${message.name}`);
         return;
+      case 'openFile': {
+        const file = review.files.find((f) => f.path === message.path);
+        if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
+        return;
+      }
+      case 'viewed': {
+        const file = review.files.find((f) => f.path === message.path);
+        if (file) await review.setViewed(file, message.viewed === true);
+        return;
+      }
     }
   }
 
@@ -136,7 +149,7 @@ export class Overview implements vscode.Disposable {
         where: where(t, pos),
         outdated: !!pos?.outdated,
         base: t.side === 'base',
-        snippet: pos && t.snippet !== undefined ? { start: pos.start, lines: t.snippet.split('\n') } : undefined,
+        snippet: pos && t.snippet !== undefined && t.file ? { start: pos.start, lines: await this.highlight(t.file, t.snippet) } : undefined,
         comments: await Promise.all(
           t.comments.map(async (c) => ({
             author: authorName(c.author),
@@ -155,7 +168,15 @@ export class Overview implements vscode.Disposable {
       base: data.base,
       target: review.targetLabel,
       worktree: data.target && review.targetDir ? review.targetDir : undefined,
-      files: review.files.length,
+      files: flatten(buildTree(review.files)).map((f) => ({
+        path: f.path,
+        oldPath: f.oldPath,
+        status: f.status,
+        added: f.added,
+        deleted: f.deleted,
+        viewed: review.viewState(f),
+        open: review.data.threads.filter((t) => t.file === f.path && !t.resolved).length,
+      })),
       added: review.files.reduce((n, f) => n + (f.added ?? 0), 0),
       deleted: review.files.reduce((n, f) => n + (f.deleted ?? 0), 0),
       counts,
@@ -164,17 +185,41 @@ export class Overview implements vscode.Disposable {
     };
   }
 
+  private async highlight(file: string, snippet: string): Promise<string[]> {
+    const ext = path.posix.extname(file).slice(1) || path.posix.basename(file);
+    const fence = '`'.repeat(Math.max(3, ...(snippet.match(/`+/g) ?? []).map((run) => run.length + 1)));
+    const html = await this.markdown(`${fence}${ext.toLowerCase()}\n${snippet}\n${fence}`);
+    const code = /<code[^>]*>([\s\S]*?)<\/code>/.exec(html)?.[1];
+    return code === undefined ? snippet.split('\n').map(escapeHtml) : splitLines(code.replace(/\n$/, ''));
+  }
+
   private async markdown(text: string): Promise<string> {
     let html = this.rendered.get(text);
     if (html === undefined) {
       const rendered = await Promise.resolve(vscode.commands.executeCommand<string | undefined>('markdown.api.render', text)).catch(
         () => undefined,
       );
-      html = rendered ?? `<p>${text.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`).replace(/\n/g, '<br>')}</p>`;
+      html = rendered ?? `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`;
       this.rendered.set(text, html);
     }
     return html;
   }
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+function splitLines(html: string): string[] {
+  const open: string[] = [];
+  return html.split('\n').map((line) => {
+    const prefix = open.join('');
+    for (const [tag] of line.matchAll(/<\/?span[^>]*>/g)) {
+      if (tag.startsWith('</')) open.pop();
+      else open.push(tag);
+    }
+    return prefix + line + '</span>'.repeat(open.length);
+  });
 }
 
 function where(thread: Thread, pos: Position | undefined): string {

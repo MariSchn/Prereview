@@ -6,7 +6,16 @@
     ['awaitingAgent', 'Awaiting agent'],
     ['resolved', 'Resolved'],
   ];
+  const FILE_STATUS = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed' };
+  const VIEWED = {
+    unviewed: ['circle', 'Mark as viewed'],
+    viewed: ['resolved', 'Mark as not viewed'],
+    updated: ['awaitingYou', 'Changed since you viewed it. Mark as viewed'],
+  };
   const saved = vscode.getState() || { resolvedOpen: false };
+  const seen = new Set();
+  let primed = false;
+  let jumps = 0;
   let state = null;
   let editing = null;
   let focusKey = null;
@@ -18,6 +27,9 @@
     }
   });
   vscode.postMessage({ type: 'ready' });
+  setInterval(() => {
+    for (const el of app.querySelectorAll('time[datetime]')) el.textContent = ago(el.getAttribute('datetime'));
+  }, 30000);
 
   function post(message) {
     vscode.postMessage(message);
@@ -56,6 +68,7 @@
     trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/>',
     outdated: '<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/>',
     chevron: '<path d="m6 3.75 4.25 4.25L6 12.25"/>',
+    circle: '<circle cx="8" cy="8" r="6"/>',
     awaitingYou: '<circle cx="8" cy="8" r="6"/><circle class="f" cx="8" cy="8" r="2.75"/>',
     awaitingAgent: '<circle cx="8" cy="8" r="6"/><path class="f" d="M8 4.25a3.75 3.75 0 0 1 0 7.5z"/>',
     resolved: '<circle class="f" cx="8" cy="8" r="6.75"/><path class="cut" d="m5.25 8.25 1.85 1.85 3.65-3.85"/>',
@@ -119,6 +132,10 @@
     );
   }
 
+  function command(name) {
+    return () => post({ type: 'command', name });
+  }
+
   function plural(n, word) {
     return `${n} ${word}${n === 1 ? '' : 's'}`;
   }
@@ -159,7 +176,11 @@
       drafts.set(key, area.value);
       if (area === document.activeElement) focused = { key, start: area.selectionStart, end: area.selectionEnd };
     }
-    app.replaceChildren(header(), description(), ...groups(), newComment());
+    app.replaceChildren(
+      header(),
+      h('div', { class: 'layout' }, h('div', { class: 'content' }, description(), ...groups(), newComment()), rail()),
+    );
+    primed = true;
     for (const area of app.querySelectorAll('textarea[data-key]')) {
       const key = area.getAttribute('data-key');
       if (drafts.has(key)) {
@@ -180,13 +201,21 @@
 
   function header() {
     const s = state;
-    const counts = GROUPS.filter(([status]) => s.counts[status]).map(([status, label]) =>
-      h('span', { class: `stat ${status}` }, icon(status), h('strong', {}, s.counts[status]), label.toLowerCase()),
-    );
     return h(
       'header',
       { class: 'header' },
-      h('h1', { class: s.titleFromAgent ? 'title' : 'title untitled' }, s.title),
+      h(
+        'div',
+        { class: 'header-top' },
+        h('h1', { class: s.titleFromAgent ? 'title' : 'title untitled' }, s.title),
+        h(
+          'div',
+          { class: 'actions' },
+          button('Copy path for agent', 'primary', command('copyReviewPath'), 'copy'),
+          button('Open all changes', 'secondary', command('openAllChanges'), 'diff'),
+          button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
+        ),
+      ),
       h(
         'div',
         { class: 'meta' },
@@ -200,7 +229,7 @@
             )
           : null,
         s.worktree ? h('span', { class: 'meta-item', title: `Checked out in ${s.worktree}` }, icon('worktree'), 'In worktree') : null,
-        h('span', { class: 'meta-item' }, icon('file'), plural(s.files, 'file')),
+        h('span', { class: 'meta-item' }, icon('file'), plural(s.files.length, 'file')),
         h(
           'span',
           { class: 'meta-item diffstat', title: `${s.added} added, ${s.deleted} deleted` },
@@ -209,17 +238,142 @@
           diffBlocks(s.added, s.deleted),
         ),
       ),
+    );
+  }
+
+  function rail() {
+    return h('aside', { class: 'rail' }, statusCard(), filesCard());
+  }
+
+  function statusCard() {
+    const { counts, threads, files } = state;
+    const waiting = threads.filter((t) => t.status === 'awaitingYou');
+    const [tone, title, text, action] = counts.awaitingYou
+      ? ['awaitingYou', 'Your turn', `${plural(counts.awaitingYou, 'thread')} ${counts.awaitingYou === 1 ? 'needs' : 'need'} your reply.`, button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length].id))]
+      : counts.awaitingAgent
+        ? ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.', button('Copy path for agent', 'secondary', command('copyReviewPath'), 'copy')]
+        : counts.resolved
+          ? ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', button('Finish review', 'secondary', command('finishReview'), 'finish')]
+          : ['idle', 'Ready for review', 'Open the changes and comment on any line.', button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
+    const viewed = files.filter((f) => f.viewed === 'viewed').length;
+    const updated = files.filter((f) => f.viewed === 'updated').length;
+    return h(
+      'section',
+      { class: `card status-card ${tone}` },
       h(
         'div',
-        { class: 'toolbar' },
-        h('div', { class: 'summary' }, counts.length ? counts : h('span', { class: 'stat' }, 'No threads yet')),
+        { class: 'status-main' },
+        h('span', { class: 'status-icon' }, icon(tone === 'idle' ? 'comment' : tone)),
+        h('div', { class: 'status-text' }, h('strong', {}, title), h('span', { class: 'muted' }, text)),
+      ),
+      h('div', { class: 'status-action' }, action),
+      threads.length || files.length
+        ? h(
+            'div',
+            { class: 'meters' },
+            threads.length
+              ? meter('Threads', `${counts.resolved} of ${threads.length} resolved`, [
+                  [counts.resolved, 'resolved', 'Resolved'],
+                  [counts.awaitingAgent, 'awaitingAgent', 'Awaiting agent'],
+                  [counts.awaitingYou, 'awaitingYou', 'Awaiting you'],
+                ])
+              : null,
+            files.length
+              ? meter('Files viewed', `${viewed} of ${files.length}`, [
+                  [viewed, 'resolved', 'Viewed'],
+                  [updated, 'awaitingYou', 'Changed since viewed'],
+                  [files.length - viewed - updated, 'rest', 'Not viewed'],
+                ])
+              : null,
+          )
+        : null,
+    );
+  }
+
+  function meter(label, value, segments) {
+    return h(
+      'div',
+      { class: 'meter' },
+      h('div', { class: 'meter-label' }, h('span', {}, label), h('span', { class: 'meter-value' }, value)),
+      h(
+        'div',
+        { class: 'bar', role: 'img', 'aria-label': `${label}: ${value}` },
+        segments
+          .filter(([n]) => n)
+          .map(([n, cls, title]) => {
+            const seg = h('span', { class: `seg ${cls}`, title: `${title}: ${n}` });
+            seg.style.flexGrow = n;
+            return seg;
+          }),
+      ),
+    );
+  }
+
+  function jumpTo(id) {
+    const card = app.querySelector(`.thread[data-id="${CSS.escape(id)}"]`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+    card.classList.remove('flash');
+    void card.offsetWidth;
+    card.classList.add('flash');
+  }
+
+  function filesCard() {
+    if (!state.files.length) return null;
+    return h(
+      'section',
+      { class: 'card files-card' },
+      h(
+        'div',
+        { class: 'card-head' },
+        h('strong', {}, 'Files'),
+        h('span', { class: 'count' }, state.files.length),
+        h('span', { class: 'spacer' }),
+        iconButton('diff', 'Open all changes', command('openAllChanges')),
+      ),
+      h('ul', { class: 'file-list' }, state.files.map(fileRow)),
+    );
+  }
+
+  function fileRow(f) {
+    const [iconName, label] = VIEWED[f.viewed];
+    const slash = f.path.lastIndexOf('/');
+    return h(
+      'li',
+      { class: `file-row ${f.viewed}` },
+      h(
+        'button',
+        {
+          class: 'view-toggle',
+          type: 'button',
+          title: label,
+          'aria-label': label,
+          'aria-pressed': f.viewed === 'viewed' ? 'true' : 'false',
+          onclick: () => post({ type: 'viewed', path: f.path, viewed: f.viewed !== 'viewed' }),
+        },
+        icon(iconName),
+      ),
+      h(
+        'a',
+        {
+          class: 'file-link',
+          href: '#',
+          title: f.status === 'R' ? `${f.oldPath} → ${f.path}` : f.path,
+          onclick: (event) => {
+            event.preventDefault();
+            post({ type: 'openFile', path: f.path });
+          },
+        },
         h(
-          'div',
-          { class: 'actions' },
-          button('Copy path for agent', 'primary', () => post({ type: 'command', name: 'copyReviewPath' }), 'copy'),
-          button('Open all changes', 'secondary', () => post({ type: 'command', name: 'openAllChanges' }), 'diff'),
-          button('Finish review', 'ghost danger', () => post({ type: 'command', name: 'finishReview' }), 'finish'),
+          'span',
+          { class: 'file-path' },
+          h('span', { class: `file-name ${f.status}` }, f.path.slice(slash + 1)),
+          slash >= 0 ? h('span', { class: 'file-dir' }, f.path.slice(0, slash)) : null,
         ),
+        h('span', { class: 'file-threads', title: f.open ? plural(f.open, 'open thread') : undefined }, f.open ? [icon('comment'), f.open] : null),
+        h('span', { class: 'added' }, f.added ? `+${f.added}` : ''),
+        h('span', { class: 'deleted' }, f.deleted ? `−${f.deleted}` : ''),
+        h('span', { class: `file-status ${f.status}`, title: FILE_STATUS[f.status] }, f.status),
       ),
     );
   }
@@ -285,7 +439,7 @@
     const resolved = t.status === 'resolved';
     return h(
       'article',
-      { class: `card thread ${t.status}` },
+      { class: `card thread ${t.status}`, 'data-id': t.id },
       h(
         'div',
         { class: 'card-head' },
@@ -327,16 +481,19 @@
       'div',
       { class: `snippet${t.base ? ' base' : ''}` },
       t.snippet.lines.map((line, i) =>
-        h('div', { class: 'line' }, h('span', { class: 'ln' }, t.snippet.start + i), h('span', { class: 'code' }, line || ' ')),
+        h('div', { class: 'line' }, h('span', { class: 'ln' }, t.snippet.start + i), h('span', { class: 'code', html: line || ' ' })),
       ),
     );
   }
 
   function comment(t, c, i) {
     const isEditing = editing && editing.id === t.id && editing.index === i;
+    const key = `${t.id}:${c.time || i}`;
+    const fresh = primed && !seen.has(key);
+    seen.add(key);
     return h(
       'div',
-      { class: 'comment' },
+      { class: `comment ${c.mine ? 'mine' : 'theirs'}${fresh ? ' fresh' : ''}` },
       avatar(c.mine),
       h(
         'div',
@@ -345,7 +502,7 @@
           'div',
           { class: 'comment-head' },
           h('span', { class: 'author' }, c.author),
-          c.time ? h('span', { class: 'time', title: new Date(c.time).toLocaleString() }, ago(c.time)) : null,
+          c.time ? h('time', { class: 'time', datetime: c.time, title: new Date(c.time).toLocaleString() }, ago(c.time)) : null,
           h('span', { class: 'spacer' }),
           isEditing
             ? null
