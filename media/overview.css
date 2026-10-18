@@ -1,14 +1,23 @@
 :root {
-  --border: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  --border: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
   --muted: var(--vscode-descriptionForeground);
-  --surface: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+  --surface: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background));
+  --hover: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
   --code-bg: var(--vscode-textCodeBlock-background, var(--surface));
   --you: var(--vscode-editorWarning-foreground, #bf8803);
   --agent: var(--vscode-charts-blue, #3794ff);
   --resolved: var(--vscode-charts-green, #388a34);
   --added: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
   --deleted: var(--vscode-gitDecoration-deletedResourceForeground, #c74e39);
+  --avatar-reviewer: var(--vscode-charts-blue, #3794ff);
+  --avatar-agent: var(--vscode-charts-purple, #b180d7);
   --radius: 6px;
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --border: var(--vscode-contrastBorder);
+  --surface: var(--vscode-editor-background);
 }
 
 body {
@@ -21,30 +30,36 @@ body {
 }
 
 main {
-  max-width: 880px;
+  max-width: 860px;
   margin: 0 auto;
-  padding: 28px 32px 56px;
+  padding: 32px 32px 64px;
 }
 
 .muted {
   color: var(--muted);
 }
 
+.spacer {
+  flex: 1;
+}
+
+/* Header */
+
 .header {
-  padding-bottom: 18px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 28px;
 }
 
 .title {
-  margin: 0 0 10px;
-  font-size: 1.85em;
+  margin: 0 0 8px;
+  font-size: 1.9em;
   font-weight: 600;
   line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 
 .title.untitled {
   font-family: var(--vscode-editor-font-family);
+  font-size: 1.5em;
   font-weight: 500;
 }
 
@@ -52,17 +67,21 @@ main {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 6px 8px;
   color: var(--muted);
 }
 
 .branch {
   padding: 1px 7px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--vscode-textLink-foreground) 14%, transparent);
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent);
   color: var(--vscode-textLink-foreground);
   font-family: var(--vscode-editor-font-family);
-  font-size: 0.92em;
+  font-size: 0.9em;
+}
+
+.sep {
+  opacity: 0.6;
 }
 
 .added {
@@ -75,27 +94,41 @@ main {
   font-weight: 600;
 }
 
-.chips {
+.toolbar {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 
-.chip {
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-right: auto;
+}
+
+.stat {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 1px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.stat strong {
+  color: var(--vscode-foreground);
+  font-weight: 600;
 }
 
 .dot {
+  flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  background: var(--muted);
 }
 
 .awaitingYou .dot {
@@ -110,18 +143,17 @@ main {
   background: var(--resolved);
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-}
+/* Buttons */
 
 button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 4px 12px;
-  border: 1px solid transparent;
+  border: 1px solid var(--vscode-button-border, transparent);
   border-radius: 4px;
   font: inherit;
+  line-height: 1.4;
   cursor: pointer;
 }
 
@@ -140,7 +172,6 @@ button.primary:hover {
 }
 
 button.secondary {
-  border-color: var(--vscode-button-border, var(--border));
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
 }
@@ -149,135 +180,171 @@ button.secondary:hover {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+button.ghost {
+  border-color: transparent;
+  background: none;
+  color: var(--vscode-foreground);
+}
+
+button.ghost:hover {
+  background: var(--hover);
+}
+
+button.danger:hover {
+  color: var(--vscode-errorForeground);
+}
+
 button.link {
-  padding: 0 4px;
+  padding: 0 6px;
+  border-color: transparent;
+  border-radius: 3px;
   background: none;
   color: var(--muted);
   font-size: 0.9em;
 }
 
 button.link:hover {
-  color: var(--vscode-textLink-foreground);
+  background: var(--hover);
+  color: var(--vscode-foreground);
 }
 
-.card,
-.thread {
-  margin-bottom: 14px;
+/* Cards and threads */
+
+.card {
+  margin-bottom: 12px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--vscode-editor-background);
 }
 
-.card-head,
-.thread-head {
+.card-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 22px;
   padding: 7px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
 .card-body {
-  padding: 4px 14px;
+  padding: 6px 16px;
 }
 
 .card-body.empty {
-  padding: 12px 14px;
+  padding: 12px 16px;
   color: var(--muted);
-  font-style: italic;
-}
-
-.thread {
-  border-left: 3px solid var(--border);
-}
-
-.thread.awaitingYou {
-  border-left-color: var(--you);
-}
-
-.thread.awaitingAgent {
-  border-left-color: var(--agent);
-}
-
-.thread.resolved {
-  border-left-color: var(--resolved);
 }
 
 .location {
+  display: flex;
+  min-width: 0;
   overflow: hidden;
   font-family: var(--vscode-editor-font-family);
-  font-weight: 600;
-  text-overflow: ellipsis;
+  font-size: 0.95em;
   white-space: nowrap;
 }
 
+.location .dir {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+}
+
+.location .base {
+  flex: none;
+  font-weight: 600;
+}
+
 a.location {
-  color: var(--vscode-textLink-foreground);
+  color: var(--vscode-foreground);
   text-decoration: none;
 }
 
-a.location:hover {
+a.location:hover .base {
+  color: var(--vscode-textLink-foreground);
   text-decoration: underline;
 }
 
 .location.general {
   font-family: var(--vscode-font-family);
+  font-size: 1em;
+  font-weight: 600;
 }
 
-.spacer {
-  flex: 1;
+.where {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.9em;
 }
 
 .pill {
+  flex: none;
   padding: 0 8px;
-  border: 1px solid currentColor;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 0.8em;
-  white-space: nowrap;
-}
-
-.pill.outdated {
   color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
 }
 
 .snippet {
   max-height: 240px;
   overflow: auto;
-  padding: 6px 0;
   border-bottom: 1px solid var(--border);
   background: var(--code-bg);
   font-family: var(--vscode-editor-font-family);
   font-size: var(--vscode-editor-font-size);
+  line-height: 1.6;
 }
 
 .snippet .line {
   display: flex;
+  min-width: max-content;
   white-space: pre;
 }
 
-.snippet.base .line {
-  background: color-mix(in srgb, var(--deleted) 10%, transparent);
-}
-
 .snippet .ln {
+  position: sticky;
+  left: 0;
   flex: none;
   min-width: 3em;
-  padding: 0 12px 0 8px;
+  padding: 0 10px 0 8px;
+  background: var(--code-bg);
   color: var(--muted);
   text-align: right;
-  opacity: 0.7;
   user-select: none;
 }
 
+.snippet .code {
+  padding: 0 12px 0 6px;
+}
+
+.snippet .line:first-child > * {
+  padding-top: 6px;
+}
+
+.snippet .line:last-child > * {
+  padding-bottom: 6px;
+}
+
+.snippet.base .line {
+  background: color-mix(in srgb, var(--deleted) 12%, transparent);
+}
+
+.snippet.base .ln {
+  background: color-mix(in srgb, var(--deleted) 18%, var(--code-bg));
+}
+
 .comments {
-  padding: 2px 14px;
+  padding: 4px 16px;
 }
 
 .comment {
   display: flex;
-  gap: 10px;
-  padding: 10px 0;
+  gap: 12px;
+  padding: 12px 0;
 }
 
 .comment + .comment {
@@ -286,16 +353,25 @@ a.location:hover {
 
 .avatar {
   flex: none;
-  width: 24px;
-  height: 24px;
-  margin-top: 1px;
-  border-radius: 50%;
+  width: 28px;
+  height: 28px;
 }
 
 .avatar.small {
-  width: 18px;
-  height: 18px;
-  margin: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.avatar .bg {
+  fill: var(--avatar-agent);
+}
+
+.avatar.reviewer .bg {
+  fill: var(--avatar-reviewer);
+}
+
+.avatar .fg {
+  fill: var(--vscode-editor-background);
 }
 
 .comment-main {
@@ -307,35 +383,53 @@ a.location:hover {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  line-height: 1.6;
 }
 
 .author {
   font-weight: 600;
 }
 
+.time {
+  color: var(--muted);
+  font-size: 0.92em;
+}
+
 .comment-actions {
-  visibility: hidden;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s;
 }
 
 .comment:hover .comment-actions,
 .comment:focus-within .comment-actions {
-  visibility: visible;
+  opacity: 1;
 }
+
+/* Markdown */
 
 .markdown {
   overflow-wrap: anywhere;
 }
 
 .markdown > :first-child {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .markdown > :last-child {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
-.markdown p {
+.markdown p,
+.markdown ul,
+.markdown ol {
   margin: 6px 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.6em;
 }
 
 .markdown a {
@@ -344,19 +438,19 @@ a.location:hover {
 
 .markdown code {
   font-family: var(--vscode-editor-font-family);
-  font-size: 0.95em;
+  font-size: 0.92em;
 }
 
 .markdown :not(pre) > code {
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 1px 5px;
+  border-radius: 4px;
   background: var(--code-bg);
 }
 
 .markdown pre {
-  padding: 8px 10px;
+  padding: 10px 12px;
   overflow: auto;
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: var(--code-bg);
 }
 
@@ -367,18 +461,18 @@ a.location:hover {
 
 .markdown blockquote {
   margin: 6px 0;
-  padding: 0 10px;
-  border-left: 3px solid var(--border);
+  padding: 0 12px;
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--border));
   color: var(--muted);
 }
+
+/* Inputs */
 
 .reply-box {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
+  padding: 0 16px 14px;
 }
 
 .reply-box .buttons {
@@ -393,19 +487,18 @@ a.location:hover {
 .reply-box:has(textarea.filled) {
   flex-direction: column;
   align-items: stretch;
-  padding-bottom: 12px;
 }
 
 .reply-box:focus-within .send,
 .reply-box:has(textarea.filled) .send {
-  display: inline-block;
+  display: inline-flex;
 }
 
 textarea {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px 10px;
   border: 1px solid var(--vscode-input-border, var(--border));
   border-radius: 4px;
   background: var(--vscode-input-background);
@@ -425,14 +518,14 @@ textarea:focus {
 
 textarea.reply {
   flex: 1;
-  height: 34px;
+  height: 32px;
   overflow: hidden;
   resize: none;
 }
 
 textarea.reply:focus,
 textarea.reply.filled {
-  height: 76px;
+  height: 80px;
   overflow: auto;
   resize: vertical;
 }
@@ -454,22 +547,30 @@ textarea.reply.filled {
   margin-top: 6px;
 }
 
-h2 {
+/* Groups */
+
+.group {
+  margin-top: 32px;
+}
+
+.group-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 26px 0 10px;
+  margin: 0 0 12px;
   font-size: 1.05em;
   font-weight: 600;
 }
 
 .count {
+  min-width: 8px;
   padding: 0 7px;
   border-radius: 999px;
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
   font-size: 0.8em;
   font-weight: 500;
+  text-align: center;
 }
 
 details.group > summary {
@@ -481,24 +582,53 @@ details.group > summary::-webkit-details-marker {
   display: none;
 }
 
-details.group > summary h2::before {
-  content: '▸';
-  color: var(--muted);
+details.group > summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
 }
 
-details.group[open] > summary h2::before {
-  content: '▾';
+.chevron {
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 0 2px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.1s;
+}
+
+details.group[open] .chevron {
+  transform: rotate(45deg);
+}
+
+details.group:not([open]) > summary .group-head {
+  margin-bottom: 0;
 }
 
 .empty-state {
-  margin: 20px 0;
-  padding: 18px;
+  margin: 32px 0;
+  padding: 24px;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   color: var(--muted);
   text-align: center;
 }
 
+.new-comment {
+  display: flex;
+  gap: 12px;
+  margin-top: 36px;
+}
+
+.new-comment .avatar {
+  margin-top: 2px;
+}
+
+.new-comment .composer {
+  flex: 1;
+  min-width: 0;
+}
+
 .new-comment textarea {
-  min-height: 84px;
+  min-height: 88px;
 }

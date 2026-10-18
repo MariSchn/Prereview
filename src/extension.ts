@@ -12,11 +12,7 @@ import { ReviewEntry, ReviewsView, countsLabel, listReviews } from './reviewsVie
 const ACTIVE_KEY = 'prereview.activeReview';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const media = vscode.Uri.joinPath(context.extensionUri, 'media');
-  const comments = new CommentsController({
-    reviewer: vscode.Uri.joinPath(media, 'reviewer.svg'),
-    agent: vscode.Uri.joinPath(media, 'agent.svg'),
-  });
+  const comments = new CommentsController(vscode.Uri.joinPath(context.extensionUri, 'media'));
   const reviews = new ReviewsView();
   const reviewsTree = vscode.window.createTreeView('prereview.reviews', { treeDataProvider: reviews });
   const files = new FilesView();

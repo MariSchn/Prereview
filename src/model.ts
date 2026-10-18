@@ -2,6 +2,12 @@ import { createHash } from 'crypto';
 
 export const REVIEWER = 'reviewer';
 
+export function authorName(author: string): string {
+  if (author === REVIEWER) return 'You';
+  const name = author || 'agent';
+  return name[0].toUpperCase() + name.slice(1);
+}
+
 export interface Comment {
   author: string;
   body: string;
