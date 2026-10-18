@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChangedFile, catBlob, changedFiles, hashObjects, mergeBase, revParse, show, worktrees } from './git';
-import { REVIEWER, ReviewData, Thread, locate, newId, parseReview, reviewFileName, serializeReview } from './model';
+import { REVIEWER, ReviewData, Thread, locate, newId, parseReview, reviewFilePath, serializeReview } from './model';
 
 export const SCHEME = 'prereview';
 const DELETED = 'deleted';
@@ -100,14 +100,13 @@ export class Review implements vscode.Disposable {
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
-    const name = reviewFileName(base, target);
-    for (let n = 1; ; n++) {
-      const filePath = path.join(root, '.prereview', n === 1 ? name : name.replace(/\.json$/, `-${n}.json`));
-      const existing = await fs.readFile(filePath, 'utf8').then(parseReview, () => undefined);
-      if (existing && (existing.base !== base || existing.target !== target)) continue;
-      if (!existing) await writeReview(filePath, { title: '', description: '', base, target, threads: [] });
-      return Review.load(filePath, state);
+    const filePath = await reviewFilePath(root, base, target);
+    try {
+      await fs.access(filePath);
+    } catch {
+      await writeReview(filePath, { title: '', description: '', base, target, threads: [] });
     }
+    return Review.load(filePath, state);
   }
 
   static async load(filePath: string, state: vscode.Memento): Promise<Review> {
@@ -233,6 +232,10 @@ export class Review implements vscode.Disposable {
   locationOf(uri: vscode.Uri): Location | undefined {
     if (uri.scheme === SCHEME) {
       const { ref, file } = JSON.parse(uri.query);
+      if (!ref) {
+        const f = this.files.find((f) => f.path === file);
+        return f && { file: f.path, side: f.status === 'D' ? 'base' : 'head' };
+      }
       if (ref && ref === this.baseSha) {
         const f = this.files.find((f) => f.oldPath === file && f.status !== 'A');
         return f && { file: f.path, side: 'base' };

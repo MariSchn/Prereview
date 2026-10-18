@@ -95,7 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
   const fileArg = (arg?: FileItem | ChangedFile | vscode.Uri): ChangedFile | undefined => {
-    if (arg instanceof vscode.Uri) return fileAt(arg);
+    if (arg instanceof vscode.Uri) return fileAt(arg) ?? activeFile();
     return arg ? ('kind' in arg ? arg.file : arg) : activeFile();
   };
 

@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 
 export const REVIEWER = 'reviewer';
@@ -76,6 +77,27 @@ export function pairLabel(data: ReviewData): string {
 export function reviewFileName(base: string, target: string | null): string {
   const slug = (s: string) => s.replace(/[^\w.-]+/g, '-');
   return `${slug(base)}...${slug(target ?? 'worktree')}.json`;
+}
+
+export async function reviewFilePath(root: string, base: string, target: string | null): Promise<string> {
+  const name = reviewFileName(base, target);
+  const dir = path.join(root, '.prereview');
+  for (let n = 1; ; n++) {
+    const filePath = path.join(dir, n === 1 ? name : name.replace(/\.json$/, `-${n}.json`));
+    let text: string;
+    try {
+      text = await fs.readFile(filePath, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      return filePath;
+    }
+    try {
+      const existing = parseReview(text);
+      if (existing.base === base && existing.target === target) return filePath;
+    } catch {
+      continue;
+    }
+  }
 }
 
 export function parseReview(text: string): ReviewData {

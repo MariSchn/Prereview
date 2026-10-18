@@ -1,6 +1,9 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { test } from 'node:test';
-import { REVIEWER, locate, parseReview, reviewFileName, serializeReview, threadStatus } from '../model';
+import { REVIEWER, locate, parseReview, reviewFileName, reviewFilePath, serializeReview, threadStatus } from '../model';
 
 test('locate keeps a thread whose snippet still matches', () => {
   assert.deepStrictEqual(locate(['a', 'b', 'c'], 'b', 2), { start: 2, end: 2 });
@@ -108,4 +111,20 @@ test('serializeReview round-trips with instructions first and threads in a fixed
 test('reviewFileName is filesystem safe', () => {
   assert.strictEqual(reviewFileName('origin/main', 'feat/x'), 'origin-main...feat-x.json');
   assert.strictEqual(reviewFileName('main', null), 'main...worktree.json');
+});
+
+test('reviewFilePath skips a file that is invalid or belongs to another pair', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prereview-'));
+  try {
+    const dir = path.join(root, '.prereview');
+    fs.mkdirSync(dir);
+    const occupied = path.join(dir, 'main...feature-foo.json');
+    fs.writeFileSync(occupied, '{');
+    assert.strictEqual(path.basename(await reviewFilePath(root, 'main', 'feature-foo')), 'main...feature-foo-2.json');
+    fs.writeFileSync(occupied, JSON.stringify({ base: 'main', target: 'feature/foo' }));
+    assert.strictEqual(path.basename(await reviewFilePath(root, 'main', 'feature-foo')), 'main...feature-foo-2.json');
+    assert.strictEqual(path.basename(await reviewFilePath(root, 'main', 'feature/foo')), 'main...feature-foo.json');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
