@@ -14,7 +14,7 @@
   };
   const saved = vscode.getState() || { resolvedOpen: false };
   const seen = new Set();
-  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const wide = matchMedia('(min-width: 1100px)');
   let primed = false;
   let scrolled = false;
   let jumps = 0;
@@ -32,6 +32,7 @@
       render();
     }
   });
+  wide.addEventListener('change', () => state && render());
   vscode.postMessage({ type: 'ready' });
   setInterval(() => {
     for (const el of app.querySelectorAll('time[datetime]')) el.textContent = ago(el.getAttribute('datetime'));
@@ -125,8 +126,8 @@
     return [slash >= 0 ? h('span', { class: 'dir' }, file.slice(0, slash + 1)) : null, h('span', { class: 'base' }, file.slice(slash + 1))];
   }
 
-  function button(label, kind, onclick, iconName) {
-    return h('button', { class: kind, type: 'button', onclick }, iconName ? icon(iconName) : null, label);
+  function button(label, kind, onclick, iconName, key) {
+    return h('button', { class: kind, type: 'button', 'data-key': key, onclick }, iconName ? icon(iconName) : null, label);
   }
 
   function iconButton(name, label, onclick, kind = '') {
@@ -150,6 +151,10 @@
 
   function command(name) {
     return () => post({ type: 'command', name });
+  }
+
+  function reduceMotion() {
+    return document.body.classList.contains('vscode-reduce-motion');
   }
 
   function plural(n, word) {
@@ -186,7 +191,8 @@
 
   function render() {
     const drafts = new Map();
-    let focused = null;
+    const active = document.activeElement;
+    let focused = active instanceof HTMLElement && active.dataset.key ? { key: active.dataset.key } : null;
     for (const area of app.querySelectorAll('textarea[data-key]')) {
       const key = area.getAttribute('data-key');
       drafts.set(key, area.value);
@@ -197,11 +203,12 @@
       const rect = el.getBoundingClientRect();
       if (rect.height) before.set(el.dataset.flip, rect.top);
     }
-    const animate = primed && !reducedMotion.matches;
+    const animate = primed && !reduceMotion();
+    const content = h('div', { class: 'content' }, description(), ...groups(), newComment());
     app.replaceChildren(
       topbar(),
       header(),
-      h('div', { class: 'layout' }, h('div', { class: 'content' }, description(), ...groups(), newComment()), rail()),
+      h('div', { class: 'layout' }, wide.matches ? [content, rail()] : [statusCard(), content, filesCard()]),
     );
     primed = true;
     titleObserver.disconnect();
@@ -228,10 +235,10 @@
     const target = focusKey ? { key: focusKey } : focused;
     focusKey = null;
     if (target) {
-      const area = app.querySelector(`textarea[data-key="${CSS.escape(target.key)}"]`);
-      if (area) {
-        area.focus();
-        if (target.start !== undefined) area.setSelectionRange(target.start, target.end);
+      const el = app.querySelector(`[data-key="${CSS.escape(target.key)}"]`);
+      if (el) {
+        el.focus();
+        if (target.start !== undefined) el.setSelectionRange(target.start, target.end);
       }
     }
   }
@@ -248,9 +255,9 @@
         h(
           'div',
           { class: 'actions' },
-          copyButton('primary'),
-          button('Open all changes', 'secondary', command('openAllChanges'), 'diff'),
           button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
+          button('Open all changes', 'secondary', command('openAllChanges'), 'diff'),
+          copyButton('primary'),
         ),
       ),
       h(
@@ -392,7 +399,8 @@
   function jumpTo(id) {
     const card = app.querySelector(`.thread[data-id="${CSS.escape(id)}"]`);
     if (!card) return;
-    card.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+    card.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'center' });
+    card.querySelector('textarea.reply')?.focus({ preventScroll: true });
     card.classList.remove('flash');
     void card.offsetWidth;
     card.classList.add('flash');
@@ -429,6 +437,7 @@
           title: label,
           'aria-label': label,
           'aria-pressed': f.viewed === 'viewed' ? 'true' : 'false',
+          'data-key': `viewed:${f.path}`,
           onclick: () => post({ type: 'viewed', path: f.path, viewed: f.viewed !== 'viewed' }),
         },
         icon(iconName),
@@ -439,6 +448,7 @@
           class: 'file-link',
           href: '#',
           title: f.status === 'R' ? `${f.oldPath} → ${f.path}` : f.path,
+          'data-key': `file:${f.path}`,
           onclick: (event) => {
             event.preventDefault();
             post({ type: 'openFile', path: f.path });
@@ -509,7 +519,7 @@
             vscode.setState(saved);
           },
         },
-        h('summary', {}, heading),
+        h('summary', { 'data-key': 'resolved' }, heading),
         threads.map(thread),
       );
     });
@@ -523,7 +533,6 @@
       h(
         'div',
         { class: 'card-head' },
-        icon(t.file ? 'file' : 'comment', 'kind'),
         t.file
           ? h(
               'a',
@@ -531,20 +540,31 @@
                 class: 'location',
                 href: '#',
                 title: 'Open in diff',
+                'data-key': `open:${t.id}:${t.status}`,
                 onclick: (event) => {
                   event.preventDefault();
                   post({ type: 'open', id: t.id });
                 },
               },
+              icon('file', 'kind'),
               filePath(t.file),
             )
-          : h('span', { class: 'location general' }, 'General comment'),
+          : h('span', { class: 'location general' }, icon('comment', 'kind'), 'General comment'),
         t.where ? h('span', { class: 'where' }, t.where) : null,
-        h('span', { class: 'spacer' }),
-        t.outdated
-          ? h('span', { class: 'pill outdated', title: 'The code this comment was left on has changed' }, icon('outdated'), 'Outdated')
-          : null,
-        button(resolved ? 'Reopen' : 'Resolve', 'ghost', () => post({ type: 'resolve', id: t.id, resolved: !resolved }), resolved ? 'reopen' : 'check'),
+        h(
+          'span',
+          { class: 'head-actions' },
+          t.outdated
+            ? h('span', { class: 'pill outdated', title: 'The code this comment was left on has changed' }, icon('outdated'), 'Outdated')
+            : null,
+          button(
+            resolved ? 'Reopen' : 'Resolve',
+            'ghost',
+            () => post({ type: 'resolve', id: t.id, resolved: !resolved }),
+            resolved ? 'reopen' : 'check',
+            `resolve:${t.id}:${t.status}`,
+          ),
+        ),
       ),
       t.snippet ? snippet(t) : null,
       h(

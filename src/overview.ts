@@ -35,7 +35,8 @@ export class Overview implements vscode.Disposable {
   private panel?: vscode.WebviewPanel;
   private review?: Review;
   private version = 0;
-  private readonly rendered = new Map<string, string>();
+  private rendered = new Map<string, string>();
+  private stale = new Map<string, string>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -142,16 +143,15 @@ export class Overview implements vscode.Disposable {
   private async state(review: Review) {
     const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
     const threads: ThreadView[] = [];
-    const sources = new Map<string, Promise<string[] | undefined>>();
+    this.stale = this.rendered;
+    this.rendered = new Map();
     for (const t of review.data.threads) {
       const status = threadStatus(t);
       counts[status]++;
       const pos = review.position(t);
       let snippet: ThreadView['snippet'];
       if (pos && t.file && t.snippet !== undefined) {
-        const key = `${t.side ?? 'head'}:${t.file}`;
-        if (!sources.has(key)) sources.set(key, review.lines(t.file, t.side));
-        const lines = pos.outdated ? undefined : await sources.get(key);
+        const lines = pos.outdated ? undefined : review.source(t);
         let start = pos.start;
         let end = pos.end;
         if (lines) {
@@ -220,14 +220,14 @@ export class Overview implements vscode.Disposable {
   }
 
   private async markdown(text: string): Promise<string> {
-    let html = this.rendered.get(text);
+    let html = this.rendered.get(text) ?? this.stale.get(text);
     if (html === undefined) {
       const rendered = await Promise.resolve(vscode.commands.executeCommand<string | undefined>('markdown.api.render', text)).catch(
         () => undefined,
       );
       html = rendered ?? `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`;
-      this.rendered.set(text, html);
     }
+    this.rendered.set(text, html);
     return html;
   }
 }

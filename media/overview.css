@@ -39,6 +39,10 @@ body.vscode-high-contrast {
   --shadow: none;
 }
 
+html {
+  scroll-padding: calc(var(--topbar) + 16px) 0 24px;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -313,7 +317,6 @@ kbd {
 
 .actions {
   display: flex;
-  flex-direction: row-reverse;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 2px;
@@ -331,10 +334,7 @@ kbd {
   min-width: 0;
 }
 
-.rail {
-  display: contents;
-}
-
+.layout > .card,
 .rail > .card {
   margin: 0;
 }
@@ -347,7 +347,6 @@ kbd {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0 16px;
-  order: -1;
   padding: 16px;
   background: linear-gradient(color-mix(in srgb, var(--tone) 7%, var(--bg)), var(--bg));
 }
@@ -464,10 +463,6 @@ kbd {
 }
 
 /* Files */
-
-.files-card {
-  order: 1;
-}
 
 .files-card .card-head {
   padding-top: 6px;
@@ -762,7 +757,6 @@ body.vscode-high-contrast .icon-button:hover {
 }
 
 .thread {
-  scroll-margin: calc(var(--topbar) + 16px) 0 24px;
   transition: border-color var(--ease);
 }
 
@@ -827,11 +821,17 @@ body.vscode-high-contrast .thread:hover {
 
 .location {
   display: flex;
+  align-items: center;
   min-width: 0;
   overflow: hidden;
   font-family: var(--mono);
   font-size: 0.95em;
   white-space: nowrap;
+}
+
+.location .kind {
+  flex: none;
+  margin-right: 8px;
 }
 
 .location .dir {
@@ -876,6 +876,14 @@ a.location:focus-visible {
   flex: none;
   color: var(--muted);
   font-size: 0.9em;
+}
+
+.head-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .pill {
@@ -940,6 +948,10 @@ a.location:focus-visible {
 
 .snippet .line:not(.focus) .code {
   opacity: 0.55;
+}
+
+body.vscode-high-contrast .snippet .line .code {
+  opacity: 1;
 }
 
 .snippet.context .line.focus {
@@ -1546,6 +1558,11 @@ details.group:not([open]) > summary .group-head {
     justify-content: space-between;
   }
 
+  .thread .card-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
   .status-card {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1555,13 +1572,11 @@ details.group:not([open]) > summary .group-head {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    transition: none !important;
-  }
+body.vscode-reduce-motion * {
+  transition: none !important;
+}
 
-  .comment.fresh,
-  .status-card.awaitingAgent .status-icon {
-    animation: none;
-  }
+body.vscode-reduce-motion .comment.fresh,
+body.vscode-reduce-motion .status-card.awaitingAgent .status-icon {
+  animation: none;
 }
