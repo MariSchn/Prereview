@@ -21,6 +21,7 @@
   let state = null;
   let editing = null;
   let focusKey = null;
+  const drafts = new Map();
   let composing = false;
   const titleObserver = new IntersectionObserver(([entry]) => {
     scrolled = !entry.isIntersecting && entry.boundingClientRect.top < 0;
@@ -95,6 +96,7 @@
     diff: '<path d="M3.75 1.75h5l3.5 3.5v9h-8.5z"/><path d="M8 5.5v3.5M6.25 7.25h3.5M6.25 11.5h3.5"/>',
     finish: '<circle cx="8" cy="8" r="6.25"/><path d="m5.5 8.25 1.75 1.75 3.25-3.5"/>',
     check: '<path d="m3.25 8.5 3 3 6.5-7"/>',
+    refresh: '<path d="M13.25 8a5.25 5.25 0 1 1-1.2-3.3"/><path d="M13.5 2.25v3h-3"/>',
     reopen: '<path d="M3 8a5 5 0 1 0 1.46-3.54"/><path d="M3.25 2.25v2.5h2.5"/>',
     edit: '<path d="M10.75 2.5 13.5 5.25 6 12.75H3.25V10z"/>',
     trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/>',
@@ -127,6 +129,18 @@
     const el = svg('svg', { class: `avatar ${kind}${small ? ' small' : ''}`, viewBox: '0 0 16 16', 'aria-hidden': 'true' });
     el.append(svg('circle', { class: 'bg', cx: 8, cy: 8, r: 7.7 }));
     for (const d of AVATAR_GLYPHS[kind]) el.append(svg('path', { class: 'fg', d }));
+    return el;
+  }
+
+  function cleanArt() {
+    const el = svg('svg', { class: 'clean-art', viewBox: '0 0 120 72', 'aria-hidden': 'true' });
+    el.innerHTML =
+      '<path class="page" d="M4 14h42a4 4 0 0 1 4 4v36a4 4 0 0 1-4 4H4a4 4 0 0 1-4-4V18a4 4 0 0 1 4-4z"/>' +
+      '<path class="page line" d="M12 30h24M12 38h16M12 46h20"/>' +
+      '<path class="page" d="M70 14h42a4 4 0 0 1 4 4v36a4 4 0 0 1-4 4H70a4 4 0 0 1-4-4V18a4 4 0 0 1 4-4z"/>' +
+      '<path class="page line" d="M78 30h24M78 38h16M78 46h20"/>' +
+      '<circle class="badge" cx="60" cy="38" r="13"/>' +
+      '<path class="tick" d="M54 38.4l3.6 3.6 8-8.4"/>';
     return el;
   }
 
@@ -215,7 +229,6 @@
   }
 
   function render() {
-    const drafts = new Map();
     const active = document.activeElement;
     let focused = active instanceof HTMLElement && active.dataset.key ? { key: active.dataset.key } : null;
     for (const area of app.querySelectorAll('textarea[data-key]')) {
@@ -229,7 +242,7 @@
       if (rect.height) before.set(el.dataset.flip, rect.top);
     }
     const animate = primed && !reduceMotion();
-    const content = h('div', { class: 'content' }, description(), ...groups(), newComment());
+    const content = h('div', { class: 'content' }, changesProblem(), description(), ...groups(), state.files.length ? newComment() : null);
     app.replaceChildren(
       topbar(),
       header(),
@@ -281,7 +294,7 @@
           'div',
           { class: 'actions' },
           button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
-          button('Open all changes', 'secondary', command('openAllChanges'), 'diff'),
+          s.files.length ? button('Open all changes', 'secondary', command('openAllChanges'), 'diff') : null,
           copyButton('primary'),
         ),
       ),
@@ -298,14 +311,22 @@
             )
           : null,
         s.worktree ? h('span', { class: 'meta-item', title: `Checked out in ${s.worktree}` }, icon('worktree'), 'In worktree') : null,
-        h('span', { class: 'meta-item' }, icon('file'), plural(s.files.length, 'file')),
-        h(
-          'span',
-          { class: 'meta-item diffstat', title: `${s.added} added, ${s.deleted} deleted` },
-          h('span', { class: 'added' }, `+${s.added}`),
-          h('span', { class: 'deleted' }, `−${s.deleted}`),
-          diffBlocks(s.added, s.deleted),
-        ),
+        s.files.length
+          ? [
+              h('span', { class: 'meta-item' }, icon('file'), plural(s.files.length, 'file')),
+              h(
+                'span',
+                { class: 'meta-item diffstat', title: `${s.added} added, ${s.deleted} deleted` },
+                h('span', { class: 'added' }, `+${s.added}`),
+                h('span', { class: 'deleted' }, `−${s.deleted}`),
+                diffBlocks(s.added, s.deleted),
+              ),
+            ]
+          : s.changesError
+            ? null
+            : s.threads.length
+              ? h('span', { class: 'meta-item' }, 'No file changes')
+              : h('span', { class: 'meta-item in-sync' }, icon('check'), 'In sync'),
       ),
     );
   }
@@ -338,6 +359,11 @@
     if (counts.resolved) {
       return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', () => button('Finish review', 'secondary', command('finishReview'), 'finish')];
     }
+    if (!state.files.length && !state.threads.length) {
+      return state.changesError
+        ? ['idle', "Couldn't load the changes", state.changesError, () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')]
+        : ['resolved', 'In sync', 'The two sides match.', () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')];
+    }
     return ['idle', 'Ready for review', 'Open the changes and comment on any line.', () => button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
   }
 
@@ -361,10 +387,14 @@
   }
 
   function rail() {
-    return h('aside', { class: 'rail' }, statusCard(), filesCard());
+    const card = statusCard();
+    const files = filesCard();
+    if (!card && !files) return null;
+    return h('aside', { class: 'rail' }, card, files);
   }
 
   function statusCard() {
+    if (!state.files.length && !state.threads.length) return null;
     const { counts, threads, files } = state;
     const [tone, title, text, action] = status();
     const viewed = files.filter((f) => f.viewed === 'viewed').length;
@@ -493,7 +523,19 @@
     );
   }
 
+  function changesProblem() {
+    if (!state.changesError) return null;
+    return h(
+      'div',
+      { class: state.threads.length ? 'notice' : 'empty-state error', 'data-flip': 'error' },
+      h('strong', {}, "Couldn't load the changes"),
+      h('span', { class: 'muted' }, state.changesError),
+      h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
+    );
+  }
+
   function description() {
+    if (!state.description && !state.files.length && !state.threads.length) return null;
     return h(
       'section',
       { class: state.description ? 'card description' : 'card description pending' },
@@ -508,18 +550,36 @@
     );
   }
 
+  function emptyComments() {
+    return h(
+      'div',
+      { class: 'empty-state', 'data-flip': 'empty' },
+      emptyArt(),
+      h('strong', {}, 'No comments yet'),
+      h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
+    );
+  }
+
+  function cleanState() {
+    return h(
+      'div',
+      { class: 'empty-state clean', 'data-flip': 'empty' },
+      cleanArt(),
+      h('strong', {}, 'No changes'),
+      h(
+        'span',
+        { class: 'clean-pair' },
+        h('code', { class: 'branch' }, icon('branch'), state.base),
+        icon('arrow', 'into'),
+        h('code', { class: 'branch' }, icon('branch'), state.target),
+      ),
+      h('span', { class: 'muted' }, 'These two match, so there is nothing to comment on yet.'),
+      h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
+    );
+  }
+
   function groups() {
-    if (!state.threads.length) {
-      return [
-        h(
-          'div',
-          { class: 'empty-state', 'data-flip': 'empty' },
-          emptyArt(),
-          h('strong', {}, 'No comments yet'),
-          h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
-        ),
-      ];
-    }
+    if (!state.threads.length) return [state.changesError ? null : state.files.length ? emptyComments() : cleanState()];
     return GROUPS.map(([status, label]) => {
       const threads = state.threads.filter((t) => t.status === status);
       if (!threads.length) return null;
@@ -640,6 +700,7 @@
                   ? iconButton('edit', 'Edit', () => {
                       editing = { id: t.id, index: i };
                       focusKey = `edit:${t.id}:${i}`;
+                      drafts.delete(focusKey);
                       render();
                     })
                   : null,

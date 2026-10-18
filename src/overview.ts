@@ -24,7 +24,7 @@ interface ThreadView {
   comments: CommentView[];
 }
 
-const COMMANDS = ['openAllChanges', 'finishReview'];
+const COMMANDS = ['openAllChanges', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
@@ -205,6 +205,7 @@ export class Overview implements vscode.Disposable {
       added: review.files.reduce((n, f) => n + (f.added ?? 0), 0),
       deleted: review.files.reduce((n, f) => n + (f.deleted ?? 0), 0),
       counts,
+      changesError: review.changesError,
       description: data.description ? await this.markdown(data.description) : undefined,
       threads,
     };

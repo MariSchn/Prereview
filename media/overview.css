@@ -285,6 +285,11 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
+.meta-item.in-sync {
+  color: var(--resolved);
+  font-weight: 600;
+}
+
 .added {
   color: var(--added);
   font-weight: 600;
@@ -618,6 +623,10 @@ kbd {
     grid-template-columns: minmax(0, 1fr) 300px;
     align-items: start;
     gap: 40px;
+  }
+
+  .layout:not(:has(> .rail)) {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .rail {
@@ -1475,6 +1484,123 @@ details.group:not([open]) > summary .group-head {
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   text-align: center;
+}
+
+.empty-state strong {
+  font-size: 1.2em;
+  font-weight: 600;
+}
+
+.empty-state .muted {
+  max-width: 46ch;
+}
+
+.empty-state.clean {
+  gap: 8px;
+  margin-top: 4px;
+  padding: 48px 32px 40px;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--resolved) 32%, var(--border));
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, color-mix(in srgb, var(--resolved) 12%, transparent), transparent 70%),
+    var(--bg);
+}
+
+.empty-state.clean .muted {
+  margin-bottom: 6px;
+}
+
+body.vscode-high-contrast .empty-state.clean {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.empty-state.error,
+.notice {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--you) 45%, var(--border));
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, color-mix(in srgb, var(--you) 12%, transparent), transparent 70%),
+    var(--bg);
+}
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--you) 45%, var(--border));
+  border-radius: var(--radius);
+}
+
+.notice .empty-actions {
+  margin-top: 4px;
+}
+
+body.vscode-high-contrast .empty-state.error,
+body.vscode-high-contrast .notice {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.clean-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 2px 0;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.clean-art {
+  width: 120px;
+  height: 72px;
+  margin-bottom: 14px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.clean-art .page {
+  fill: color-mix(in srgb, var(--muted) 8%, var(--bg));
+  stroke: color-mix(in srgb, var(--muted) 55%, transparent);
+  stroke-width: 1.25;
+}
+
+.clean-art .page.line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 75%, transparent);
+  stroke-width: 2.25;
+}
+
+.clean-art .badge {
+  fill: color-mix(in srgb, var(--resolved) 18%, var(--bg));
+  stroke: var(--resolved);
+  stroke-width: 1.25;
+}
+
+.clean-art .tick {
+  fill: none;
+  stroke: var(--resolved);
+  stroke-width: 1.8;
+}
+
+body.vscode-high-contrast .clean-art .page,
+body.vscode-high-contrast .clean-art .badge {
+  fill: var(--bg);
+  stroke: var(--fg);
+}
+
+body.vscode-high-contrast .clean-art .page.line,
+body.vscode-high-contrast .clean-art .tick {
+  stroke: var(--fg);
 }
 
 .empty-art {

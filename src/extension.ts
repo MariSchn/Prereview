@@ -45,7 +45,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (review) {
       const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
       tree.description = review.title;
-      tree.message = review.files.length ? `${viewed} of ${review.files.length} files viewed` : 'No changes.';
+      tree.message = review.changesError
+        ? review.changesError
+        : review.files.length
+          ? `${viewed} of ${review.files.length} files viewed`
+          : undefined;
       statusItem.text = statusText(next);
       statusItem.tooltip = `Prereview: ${review.title}`;
       statusItem.show();
@@ -61,6 +65,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     counts = next;
     updateEditorContext();
+    const noFiles = !!review && review.files.length === 0;
+    const clean = noFiles && review !== undefined && !review.changesError && review.data.threads.length === 0;
+    vscode.commands.executeCommand('setContext', 'prereview.noFiles', noFiles);
+    vscode.commands.executeCommand('setContext', 'prereview.noChanges', clean);
+    vscode.commands.executeCommand('setContext', 'prereview.emptyDiff', noFiles && !clean && !review?.changesError);
   };
 
   const updateBadge = () => {
@@ -80,8 +89,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reviews.setActive(next?.filePath);
     counts = countStatuses(next?.data.threads ?? []);
     listener = next?.onDidChange(updateUi);
-    updateUi({ external: false });
-    vscode.commands.executeCommand('setContext', 'prereview.active', !!next);
+    void Promise.resolve(vscode.commands.executeCommand('setContext', 'prereview.active', !!next)).then(() => {
+      if (review === next) updateUi({ external: false });
+    });
     context.workspaceState.update(ACTIVE_KEY, next?.filePath);
   };
 
@@ -146,6 +156,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.openAllChanges', () => {
       if (!review) return;
+      if (!review.files.length) return overview.show();
       const dir = review.targetDir ?? review.root;
       const resources = files.orderedFiles.map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review!.diffUris(f)]);
       return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);

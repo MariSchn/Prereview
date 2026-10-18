@@ -88,6 +88,7 @@ export class Review implements vscode.Disposable {
   private sources = new Map<string, string[] | undefined>();
   private blobs = new Map<string, string>();
   files: ChangedFile[] = [];
+  changesError?: string;
   targetDir?: string;
 
   private constructor(
@@ -156,6 +157,7 @@ export class Review implements vscode.Disposable {
     } catch (e) {
       warnings.push((e as Error).message);
       this.files = [];
+      this.changesError = (e as Error).message;
     }
     if (this.disposed) return;
     for (const warning of warnings) {
@@ -312,6 +314,7 @@ export class Review implements vscode.Disposable {
     this.files = (await changedFiles(this.root, this.baseSha, { ref: targetDir ? undefined : targetSha, dir: targetDir })).sort((a, b) =>
       a.path.localeCompare(b.path),
     );
+    this.changesError = undefined;
     if (targetDir !== this.targetDir) {
       this.targetDir = targetDir;
       this.targetWatcher?.dispose();
