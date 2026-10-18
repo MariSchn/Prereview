@@ -82,6 +82,7 @@ export class Review implements vscode.Disposable {
   private baseSha = '';
   private targetSha?: string;
   private positions = new Map<string, Position>();
+  private sources = new Map<string, string[] | undefined>();
   private blobs = new Map<string, string>();
   files: ChangedFile[] = [];
   targetDir?: string;
@@ -170,6 +171,10 @@ export class Review implements vscode.Disposable {
   position(thread: Thread): Position | undefined {
     if (thread.startLine === undefined) return undefined;
     return this.positions.get(thread.id) ?? { start: thread.startLine, end: thread.endLine ?? thread.startLine, outdated: true };
+  }
+
+  source(thread: Thread): string[] | undefined {
+    return thread.file ? this.sources.get(sourceKey(thread.file, thread.side)) : undefined;
   }
 
   headUri(file: string): vscode.Uri {
@@ -340,17 +345,18 @@ export class Review implements vscode.Disposable {
 
   private async reanchor(): Promise<void> {
     const positions = new Map<string, Position>();
-    const cache = new Map<string, string[] | undefined>();
+    const sources = new Map<string, string[] | undefined>();
     for (const t of this.data.threads) {
       if (!t.file || t.startLine === undefined) continue;
       const end = t.endLine ?? t.startLine;
-      const key = `${t.side ?? 'head'}:${t.file}`;
-      if (!cache.has(key)) cache.set(key, await this.lines(t.file, t.side));
-      const lines = cache.get(key);
+      const key = sourceKey(t.file, t.side);
+      if (!sources.has(key)) sources.set(key, await this.lines(t.file, t.side));
+      const lines = sources.get(key);
       const loc = lines && (t.snippet === undefined ? { start: t.startLine, end } : locate(lines, t.snippet, t.startLine));
       positions.set(t.id, loc ? { ...loc, outdated: false } : { start: t.startLine, end, outdated: true });
     }
     this.positions = positions;
+    this.sources = sources;
   }
 
   private async lines(file: string, side?: 'base'): Promise<string[] | undefined> {
@@ -379,6 +385,10 @@ export class Review implements vscode.Disposable {
     if (message !== this.lastWarning) vscode.window.showWarningMessage(`Prereview: ${message}`);
     this.lastWarning = message;
   }
+}
+
+function sourceKey(file: string, side?: 'base'): string {
+  return `${side ?? 'head'}:${file}`;
 }
 
 function newComment(body: string) {

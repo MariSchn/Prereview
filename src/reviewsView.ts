@@ -39,8 +39,8 @@ export function countsLabel(counts: Record<ThreadStatus, number>): string {
 
 function icon(counts: Record<ThreadStatus, number>): vscode.ThemeIcon {
   if (counts.awaitingYou) return new vscode.ThemeIcon('comment-unresolved', new vscode.ThemeColor('list.warningForeground'));
-  if (counts.awaitingAgent) return new vscode.ThemeIcon('comment-discussion');
-  if (counts.resolved) return new vscode.ThemeIcon('pass');
+  if (counts.awaitingAgent) return new vscode.ThemeIcon('comment-discussion', new vscode.ThemeColor('charts.purple'));
+  if (counts.resolved) return new vscode.ThemeIcon('pass', new vscode.ThemeColor('charts.green'));
   return new vscode.ThemeIcon('git-pull-request');
 }
 
