@@ -1515,6 +1515,36 @@ body.vscode-high-contrast .empty-state.clean {
   border-color: var(--border);
 }
 
+.empty-state.error,
+.notice {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--you) 45%, var(--border));
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, color-mix(in srgb, var(--you) 12%, transparent), transparent 70%),
+    var(--bg);
+}
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--you) 45%, var(--border));
+  border-radius: var(--radius);
+}
+
+.notice .empty-actions {
+  margin-top: 4px;
+}
+
+body.vscode-high-contrast .empty-state.error,
+body.vscode-high-contrast .notice {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
 .clean-pair {
   display: flex;
   flex-wrap: wrap;

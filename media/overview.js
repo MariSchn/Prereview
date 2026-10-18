@@ -21,6 +21,7 @@
   let state = null;
   let editing = null;
   let focusKey = null;
+  const drafts = new Map();
   let composing = false;
   const titleObserver = new IntersectionObserver(([entry]) => {
     scrolled = !entry.isIntersecting && entry.boundingClientRect.top < 0;
@@ -228,7 +229,6 @@
   }
 
   function render() {
-    const drafts = new Map();
     const active = document.activeElement;
     let focused = active instanceof HTMLElement && active.dataset.key ? { key: active.dataset.key } : null;
     for (const area of app.querySelectorAll('textarea[data-key]')) {
@@ -242,7 +242,7 @@
       if (rect.height) before.set(el.dataset.flip, rect.top);
     }
     const animate = primed && !reduceMotion();
-    const content = h('div', { class: 'content' }, description(), ...groups(), state.files.length ? newComment() : null);
+    const content = h('div', { class: 'content' }, changesProblem(), description(), ...groups(), state.files.length ? newComment() : null);
     app.replaceChildren(
       topbar(),
       header(),
@@ -322,7 +322,11 @@
                 diffBlocks(s.added, s.deleted),
               ),
             ]
-          : h('span', { class: 'meta-item in-sync' }, icon('check'), 'In sync'),
+          : s.changesError
+            ? null
+            : s.threads.length
+              ? h('span', { class: 'meta-item' }, 'No file changes')
+              : h('span', { class: 'meta-item in-sync' }, icon('check'), 'In sync'),
       ),
     );
   }
@@ -355,7 +359,11 @@
     if (counts.resolved) {
       return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', () => button('Finish review', 'secondary', command('finishReview'), 'finish')];
     }
-    if (!state.files.length) return ['resolved', 'In sync', 'The two sides match.', () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')];
+    if (!state.files.length && !state.threads.length) {
+      return state.changesError
+        ? ['idle', "Couldn't load the changes", state.changesError, () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')]
+        : ['resolved', 'In sync', 'The two sides match.', () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')];
+    }
     return ['idle', 'Ready for review', 'Open the changes and comment on any line.', () => button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
   }
 
@@ -515,6 +523,17 @@
     );
   }
 
+  function changesProblem() {
+    if (!state.changesError) return null;
+    return h(
+      'div',
+      { class: state.threads.length ? 'notice' : 'empty-state error', 'data-flip': 'error' },
+      h('strong', {}, "Couldn't load the changes"),
+      h('span', { class: 'muted' }, state.changesError),
+      h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
+    );
+  }
+
   function description() {
     if (!state.description && !state.files.length && !state.threads.length) return null;
     return h(
@@ -560,7 +579,7 @@
   }
 
   function groups() {
-    if (!state.threads.length) return [state.files.length ? emptyComments() : cleanState()];
+    if (!state.threads.length) return [state.changesError ? null : state.files.length ? emptyComments() : cleanState()];
     return GROUPS.map(([status, label]) => {
       const threads = state.threads.filter((t) => t.status === status);
       if (!threads.length) return null;
@@ -681,6 +700,7 @@
                   ? iconButton('edit', 'Edit', () => {
                       editing = { id: t.id, index: i };
                       focusKey = `edit:${t.id}:${i}`;
+                      drafts.delete(focusKey);
                       render();
                     })
                   : null,
