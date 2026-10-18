@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
-import { changedFiles, git, hashObjects, mergeBase, parseNumstat, parseRaw, parseWorktrees } from '../git';
+import { catBlob, changedFiles, git, hashObjects, mergeBase, parseNumstat, parseRaw, parseWorktrees, revParse, show } from '../git';
 
 const SHA = 'a'.repeat(40);
 const ZERO = '0'.repeat(40);
@@ -15,6 +15,16 @@ test('parseRaw handles renames, odd statuses and uncomputed blobs', () => {
     { path: 'new.ts', oldPath: 'old.ts', status: 'R', blob: SHA },
     { path: 'link', oldPath: 'link', status: 'M', blob: undefined },
   ]);
+});
+
+test('parseNumstat keeps a tab that is part of the file name', () => {
+  const stats = parseNumstat('1\t0\ta\tb.ts\0');
+  assert.deepStrictEqual([...stats], [['a\tb.ts', { added: 1, deleted: 0 }]]);
+});
+
+test('parseWorktrees skips a worktree whose folder is gone', () => {
+  const out = 'worktree /wt/x\nHEAD 1\nbranch refs/heads/feat\nprunable gitdir file points to non-existent location\n';
+  assert.deepStrictEqual([...parseWorktrees(out)], []);
 });
 
 test('parseNumstat handles renames and binary files', () => {
@@ -34,8 +44,21 @@ test('parseWorktrees maps branches to their worktree', () => {
   ]);
 });
 
+test('revisions that look like options are rejected before git sees them', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prereview-'));
+  const evil = `--output=${path.join(root, 'out')}`;
+  await assert.rejects(show(root, evil, 'a.txt'), /Invalid revision/);
+  await assert.rejects(revParse(root, evil), /Invalid revision/);
+  await assert.rejects(mergeBase(root, 'main', evil), /Invalid revision/);
+  await assert.rejects(catBlob(root, evil), /Invalid revision/);
+  await assert.rejects(changedFiles(root, evil, { dir: root }), /Invalid revision/);
+  assert.deepStrictEqual(fs.readdirSync(root), []);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('changedFiles covers committed, working tree and worktree changes', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'prereview-')));
+  try {
   const run = (...args: string[]) => git(root, args);
   const write = (file: string, text: string) => fs.writeFileSync(path.join(root, file), text);
   await run('init', '-q', '-b', 'main');
@@ -73,5 +96,7 @@ test('changedFiles covers committed, working tree and worktree changes', async (
     sorted(await changedFiles(root, base, { dir: path.join(root, '.wt/agent') })).map((f) => f.path),
     ['agent.txt', 'edit.txt', 'gone.txt'],
   );
-  fs.rmSync(root, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

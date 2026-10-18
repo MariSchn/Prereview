@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChangedFile, catBlob, changedFiles, hashObjects, mergeBase, revParse, show, worktrees } from './git';
-import { REVIEWER, ReviewData, Thread, locate, newId, parseReview, reviewFileName, serializeReview } from './model';
+import { REVIEWER, ReviewData, Thread, locate, newId, parseReview, reviewFilePath, serializeReview } from './model';
 
 export const SCHEME = 'prereview';
 const DELETED = 'deleted';
@@ -78,7 +78,10 @@ export class Review implements vscode.Disposable {
   private targetWatcher?: vscode.FileSystemWatcher;
   private timer?: NodeJS.Timeout;
   private queue: Promise<unknown> = Promise.resolve();
-  private lastWarning?: string;
+  private queuedRefresh?: Promise<void>;
+  private refreshAgain = false;
+  private warnings = new Set<string>();
+  private disposed = false;
   private baseSha = '';
   private targetSha?: string;
   private positions = new Map<string, Position>();
@@ -97,7 +100,7 @@ export class Review implements vscode.Disposable {
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
-    const filePath = path.join(root, '.prereview', reviewFileName(base, target));
+    const filePath = await reviewFilePath(root, base, target);
     try {
       await fs.access(filePath);
     } catch {
@@ -122,29 +125,52 @@ export class Review implements vscode.Disposable {
   }
 
   refresh(): Promise<void> {
-    return this.enqueue(async () => {
-      let ok = true;
+    if (this.queuedRefresh) {
+      this.refreshAgain = true;
+      return this.queuedRefresh;
+    }
+    const next = this.enqueue(async () => {
       try {
-        this.data = parseReview(await fs.readFile(this.filePath, 'utf8'));
-      } catch (e) {
-        ok = false;
-        this.warn(`Could not read ${path.basename(this.filePath)}: ${(e as Error).message}`);
+        do {
+          this.refreshAgain = false;
+          await this.refreshOnce();
+        } while (this.refreshAgain && !this.disposed);
+      } finally {
+        this.queuedRefresh = undefined;
       }
-      try {
-        await this.loadChanges();
-      } catch (e) {
-        ok = false;
-        this.warn((e as Error).message);
-        this.files = [];
-      }
-      if (ok) this.lastWarning = undefined;
-      await this.reanchor();
-      this.changed.fire({ external: true });
     });
+    this.queuedRefresh = next;
+    return next;
   }
 
-  addThread(location: { file?: string; side?: 'base'; startLine?: number; endLine?: number }, body: string): Promise<void> {
-    return this.update((data) => data.threads.push({ id: newId(), ...location, resolved: false, comments: [newComment(body)] }));
+  private async refreshOnce(): Promise<void> {
+    if (this.disposed) return;
+    const warnings: string[] = [];
+    try {
+      this.data = parseReview(await fs.readFile(this.filePath, 'utf8'));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not read ${path.basename(this.filePath)}: ${(e as Error).message}`);
+    }
+    try {
+      await this.loadChanges();
+    } catch (e) {
+      warnings.push((e as Error).message);
+      this.files = [];
+    }
+    if (this.disposed) return;
+    for (const warning of warnings) {
+      if (!this.warnings.has(warning)) vscode.window.showWarningMessage(`Prereview: ${warning}`);
+    }
+    this.warnings = new Set(warnings);
+    await this.reanchor();
+    this.changed.fire({ external: true });
+  }
+
+  async addThread(location: { file?: string; side?: 'base'; startLine?: number; endLine?: number }, body: string): Promise<void> {
+    const { file, side, startLine, endLine } = location;
+    const lines = file && startLine !== undefined ? await this.lines(file, side) : undefined;
+    const snippet = lines?.slice(startLine! - 1, endLine).join('\n');
+    return this.update((data) => data.threads.push({ id: newId(), ...location, snippet, resolved: false, comments: [newComment(body)] }));
   }
 
   reply(id: string, body: string): Promise<void> {
@@ -206,6 +232,10 @@ export class Review implements vscode.Disposable {
   locationOf(uri: vscode.Uri): Location | undefined {
     if (uri.scheme === SCHEME) {
       const { ref, file } = JSON.parse(uri.query);
+      if (!ref) {
+        const f = this.files.find((f) => f.path === file);
+        return f && { file: f.path, side: f.status === 'D' ? 'base' : 'head' };
+      }
       if (ref && ref === this.baseSha) {
         const f = this.files.find((f) => f.oldPath === file && f.status !== 'A');
         return f && { file: f.path, side: 'base' };
@@ -245,6 +275,7 @@ export class Review implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
     clearTimeout(this.timer);
     this.watcher.dispose();
     this.targetWatcher?.dispose();
@@ -273,7 +304,8 @@ export class Review implements vscode.Disposable {
   private async loadChanges(): Promise<void> {
     const { base, target } = this.data;
     const targetSha = target ? await revParse(this.root, target) : undefined;
-    const targetDir = target ? (await worktrees(this.root)).get(target) : this.root;
+    const dir = target ? (await worktrees(this.root)).get(target) : this.root;
+    const targetDir = target && dir === this.root ? undefined : dir;
     if (targetSha !== this.targetSha) contentProvider.refreshOpen();
     this.targetSha = targetSha;
     this.baseSha = await mergeBase(this.root, base, targetSha ?? 'HEAD');
@@ -283,15 +315,15 @@ export class Review implements vscode.Disposable {
     if (targetDir !== this.targetDir) {
       this.targetDir = targetDir;
       this.targetWatcher?.dispose();
-      this.targetWatcher = targetDir && !isInside(targetDir, this.root) ? this.watch(targetDir) : undefined;
+      this.targetWatcher = !this.disposed && targetDir && !isInside(targetDir, this.root) ? this.watch(targetDir) : undefined;
     }
     const viewed = this.viewed();
     const tracked = this.files.filter((f) => viewed[f.path]);
     const blobs = new Map<string, string>();
     if (this.targetDir) {
       const present = tracked.filter((f) => f.status !== 'D');
-      const shas = await hashObjects(this.targetDir, present.map((f) => f.path), false);
-      present.forEach((f, i) => blobs.set(f.path, shas[i]));
+      const shas = await hashObjects(this.targetDir, present.map((f) => f.path), false).catch(() => []);
+      present.forEach((f, i) => shas[i] && blobs.set(f.path, shas[i]));
     }
     for (const f of tracked) {
       if (f.status === 'D') blobs.set(f.path, DELETED);
@@ -306,10 +338,10 @@ export class Review implements vscode.Disposable {
       fn(data);
       for (const t of data.threads) {
         if (!t.file || t.startLine === undefined || t.snippet !== undefined) continue;
-        const lines = await this.lines(t.file, t.side);
+        const lines = this.sources.get(sourceKey(t.file, t.side));
         if (lines) t.snippet = lines.slice(t.startLine - 1, t.endLine).join('\n');
       }
-      await writeReview(this.filePath, data);
+      await fs.writeFile(this.filePath, serializeReview(data));
       this.data = data;
       await this.reanchor();
       this.changed.fire({ external: false });
@@ -339,6 +371,7 @@ export class Review implements vscode.Disposable {
   }
 
   private scheduleRefresh(): void {
+    if (this.disposed) return;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.refresh(), 300);
   }
@@ -365,9 +398,9 @@ export class Review implements vscode.Disposable {
       if (side === 'base') {
         text = await show(this.root, this.baseSha, this.oldPath(file));
       } else if (this.targetDir) {
-        const fsPath = path.join(this.targetDir, file);
-        const doc = vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'file' && d.uri.fsPath === fsPath);
-        text = doc?.isDirty ? doc.getText() : await fs.readFile(fsPath, 'utf8');
+        const uri = vscode.Uri.file(path.join(this.targetDir, file));
+        const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+        text = doc?.isDirty ? doc.getText() : await fs.readFile(uri.fsPath, 'utf8');
       } else {
         text = await show(this.root, this.data.target!, file);
       }
@@ -381,10 +414,6 @@ export class Review implements vscode.Disposable {
     return this.files.find((f) => f.path === file)?.oldPath ?? file;
   }
 
-  private warn(message: string): void {
-    if (message !== this.lastWarning) vscode.window.showWarningMessage(`Prereview: ${message}`);
-    this.lastWarning = message;
-  }
 }
 
 function sourceKey(file: string, side?: 'base'): string {

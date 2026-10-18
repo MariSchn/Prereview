@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -24,11 +25,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let listener: vscode.Disposable | undefined;
   let counts = countStatuses([]);
 
-  const activeFile = (): ChangedFile | undefined => {
-    const uri = vscode.window.activeTextEditor?.document.uri;
+  const fileAt = (uri?: vscode.Uri): ChangedFile | undefined => {
     const location = uri && review?.locationOf(uri);
     return location ? review?.files.find((f) => f.path === location.file) : undefined;
   };
+  const activeFile = () => fileAt(vscode.window.activeTextEditor?.document.uri);
 
   const updateEditorContext = () => {
     const file = activeFile();
@@ -48,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusItem.text = statusText(next);
       statusItem.tooltip = `Prereview: ${review.title}`;
       statusItem.show();
-      if (change.external && counts.awaitingAgent > 0 && next.awaitingAgent === 0 && next.awaitingYou > 0) {
+      if (change.external && counts.awaitingAgent > 0 && next.awaitingAgent === 0 && next.awaitingYou > 0 && !overview.visible) {
         vscode.window.showInformationMessage('The agent replied to all open threads.', 'Open Overview').then((choice) => {
           if (choice) overview.show();
         });
@@ -93,12 +94,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     });
 
-  const fileArg = (arg?: FileItem | ChangedFile): ChangedFile | undefined => (arg ? ('kind' in arg ? arg.file : arg) : activeFile());
+  const fileArg = (arg?: FileItem | ChangedFile | vscode.Uri): ChangedFile | undefined => {
+    if (arg instanceof vscode.Uri) return fileAt(arg) ?? activeFile();
+    return arg ? ('kind' in arg ? arg.file : arg) : activeFile();
+  };
 
   context.subscriptions.push(
     reviews,
     reviewsTree,
-    reviews.onDidChangeTreeData(updateBadge),
+    reviews.onDidChangeTreeData(() => {
+      updateBadge();
+      if (review && !fs.existsSync(review.filePath)) setReview(undefined);
+    }),
     comments,
     tree,
     overview,
@@ -108,8 +115,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerFileDecorationProvider(files),
     vscode.window.onDidChangeActiveTextEditor(updateEditorContext),
     tree.onDidChangeCheckboxState(async (event) => {
-      for (const [node, state] of event.items) {
-        if (node.kind === 'file') await review?.setViewed(node.file, state === vscode.TreeItemCheckboxState.Checked);
+      try {
+        for (const [node, state] of event.items) {
+          if (node.kind === 'file') await review?.setViewed(node.file, state === vscode.TreeItemCheckboxState.Checked);
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage(`Prereview: ${(e as Error).message}`);
+        files.refresh();
       }
     }),
     command('prereview.startReview', async () => {

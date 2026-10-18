@@ -21,15 +21,21 @@
   let state = null;
   let editing = null;
   let focusKey = null;
+  let composing = false;
   const titleObserver = new IntersectionObserver(([entry]) => {
     scrolled = !entry.isIntersecting && entry.boundingClientRect.top < 0;
     app.querySelector('.topbar')?.classList.toggle('visible', scrolled);
   });
 
+  window.addEventListener('compositionstart', () => (composing = true));
+  window.addEventListener('compositionend', () => {
+    composing = false;
+    if (state) render();
+  });
   window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'state') {
       state = event.data.state;
-      render();
+      if (!composing) render();
     }
   });
   wide.addEventListener('change', () => state && render());
@@ -42,12 +48,31 @@
     vscode.postMessage(message);
   }
 
+  const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, form, input, button, textarea, select';
+
+  function sanitize(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    for (const el of template.content.querySelectorAll(UNSAFE_TAGS)) el.remove();
+    for (const el of template.content.querySelectorAll('*')) {
+      for (const { name, value } of [...el.attributes]) {
+        const url = /(^|:)(href|src|action|formaction)$/.test(name) && /^javascript:/i.test(value.replace(/[\s\x00-\x1f]/g, ''));
+        const keep = name === 'class' && value.split(/\s+/).filter((c) => c.startsWith('hljs')).join(' ');
+        if (keep) el.setAttribute('class', keep);
+        else if (name.startsWith('on') || name === 'style' || name === 'class' || name === 'id' || name.startsWith('data-') || url) {
+          el.removeAttribute(name);
+        }
+      }
+    }
+    return template.content;
+  }
+
   function h(tag, props, ...children) {
     const el = document.createElement(tag);
     for (const [key, value] of Object.entries(props || {})) {
       if (value === undefined || value === null || value === false) continue;
       if (key === 'class') el.className = value;
-      else if (key === 'html') el.innerHTML = value;
+      else if (key === 'html') el.replaceChildren(sanitize(value));
       else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
       else el.setAttribute(key, value === true ? '' : value);
     }
