@@ -1,65 +1,121 @@
-# Prereview
+<p align="center">
+  <img src="docs/assets/logo.png" width="96" alt="Prereview">
+</p>
 
-A VS Code extension for reviewing agent-written changes locally, like a GitHub pull request, without opening a PR or cluttering the history.
+<h1 align="center">Prereview</h1>
+
+<p align="center"><strong>Review your agent's code like a pull request, before there is one.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/MariSchn/Prereview/actions/workflows/ci.yml"><img src="https://github.com/MariSchn/Prereview/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+</p>
+
+Comment on your coding agent's changes inside VS Code or Cursor, send the review back, and read the reply in the same thread. Nothing is pushed, and there is no pull request.
+
+<p align="center">
+  <img src="docs/assets/demo.gif" width="880" alt="Starting a review, commenting on a line, sending it to the agent, and resolving the thread after the reply">
+</p>
+
+## Why
+
+Reviewing agent output usually means one of two things. You push a branch and open a pull request, which runs CI and leaves unfinished work in your history. Or you read a raw diff and type your comments into the chat, where they get detached from the lines they were about.
+
+Prereview is the review step without the pull request. The comments live on the lines, the agent replies in the same file, and the editor updates as it writes.
 
 ## Install
 
+Download `prereview-0.1.0.vsix` from [Releases](https://github.com/MariSchn/Prereview/releases). Then either:
+
+- open the Extensions view, click **⋯**, and choose **Install from VSIX…**, or
+- run this in a terminal:
+
 ```sh
-npm install
-npm run package
 code --install-extension prereview-0.1.0.vsix
 ```
 
-To develop, open this folder in VS Code and press F5.
+In Cursor, use `cursor --install-extension` instead of `code`.
+
+Prereview needs VS Code 1.99 or later and a local git repository. It is not published to the Marketplace or Open VSX.
 
 ## Use
 
-1. Open **Prereview** in the activity bar and click **Start Review**. Pick a base branch, then what to compare it with:
-   - **Working tree**: the current branch plus uncommitted changes.
-   - **Another branch**: if it is checked out in a worktree (an agent's, for example), Prereview reviews that worktree, uncommitted changes included. Otherwise it shows the branch's commits.
+1. Open **Prereview** in the activity bar and click **Start Review**. Pick the base branch, then what to compare it with.
+   - **Working tree** is the branch you have open, plus uncommitted changes.
+   - **Another branch** shows that branch's commits. If the branch is checked out in another worktree, for example an agent's, the review includes that worktree's uncommitted changes, and you can edit the code right in the diff.
+2. The overview works like a pull request's Conversation tab. It shows the title and description, every thread, and a box for a general comment.
+3. **Changed Files** lists the diff as a tree, with additions and deletions. Click a file to open it. Tick a file once you have reviewed it. If it changes after that, it is unticked, and **Open Changes Since Viewed** shows only the new part.
+4. Hover the line numbers in a diff and click **+** to comment. Drag to cover a range. You can also comment on a whole file, on a deleted line, or on the change as a whole. Resolve a thread when you are done with it.
+5. Click **Copy path for agent** and paste the path into Claude Code, Codex, Cursor, or whichever agent made the change. The review file tells it how to reply. Replies show up on their own. The badge on the Prereview icon counts threads waiting on you.
+6. **Finish review** deletes the review and its comments.
 
-   When the reviewed code is a working tree, you can edit it right in the diff.
-2. The **overview** works like GitHub's Conversation tab: the agent's title and description, every thread grouped into *Awaiting you*, *Awaiting agent* and *Resolved*, and a box for general comments.
-3. **Changed Files** shows the changes as a tree with +/− counts. Click a file for its diff, or use **Open All Changes** to see every diff in one view. Tick files as **viewed** as you go. If the agent changes a viewed file, it gets unticked and **Open Changes Since Viewed** shows only what changed.
-4. Hover the line numbers and click **+** to comment (drag to select a range). You can also comment on a whole file, on removed lines in the old version, or on the change as a whole from the overview. Edit or delete your comments, and resolve threads once they are addressed.
-5. Click **Copy Review Path** and send the path to your agent, like a PR link. The file tells the agent how to reply. The badge on the Prereview icon counts threads awaiting you, and a notification appears once the agent has answered every open thread.
-6. **Finish Review** deletes the review when you are done.
+You can keep several reviews at once, one per agent or branch. **Reviews** lists them. Click one to switch.
 
-You can have several reviews open at once, for example one per agent. **Reviews** lists them all with their thread counts, like a pull request list. Click one to switch to it. The badge counts threads awaiting you across all reviews.
+<img src="docs/assets/overview.png" width="880" alt="The review overview, with the agent's description and a thread waiting on you">
 
-## Review file
+<img src="docs/assets/comment.png" width="880" alt="A comment on a changed line, shown in the diff">
 
-Reviews are stored in `.prereview/<base>...<target>.json` at the repository root. The folder ignores itself, so nothing gets committed.
+## The review file
+
+Each review is a JSON file in `.prereview/` at the repository root. The folder ignores itself, so the files are not committed.
 
 ```json
 {
   "agentInstructions": "...",
-  "title": "Make average() safe for empty input",
-  "description": "Guards `average()` against empty arrays.",
+  "title": "Add discount codes to the cart",
+  "description": "Adds discount codes that customers can apply at checkout.",
   "base": "main",
-  "target": "agent",
+  "target": "agent/discount-codes",
   "threads": [
     {
       "id": "3f2a9c1b",
-      "file": "src/app.ts",
-      "startLine": 12,
-      "endLine": 14,
-      "snippet": "let sum = 0;\n...",
+      "file": "src/cart.ts",
+      "startLine": 27,
+      "endLine": 27,
+      "snippet": "this.discounts.push(discount);",
       "resolved": false,
       "comments": [
-        { "author": "reviewer", "body": "Rename `sum`.", "createdAt": "2026-10-17T10:00:00.000Z" },
-        { "author": "agent", "body": "Renamed to `total`." }
+        { "author": "reviewer", "body": "Should codes stack?", "createdAt": "2026-10-18T12:00:00.000Z" },
+        { "author": "agent", "body": "No. A cart now holds a single code." }
       ]
-    },
-    { "id": "8c01d2e4", "file": "src/util.ts", "resolved": false, "comments": [...] },
-    { "id": "51b7a0f9", "file": "src/app.ts", "side": "base", "startLine": 7, "endLine": 7, "snippet": "...", "resolved": false, "comments": [...] },
-    { "id": "e93c4b10", "resolved": false, "comments": [...] }
+    }
   ]
 }
 ```
 
-`target` is `null` for working tree reviews. A thread without lines is about the whole file, a thread without `file` is a general comment, and `"side": "base"` puts it on the old version of the file. Agents fill in `title` and `description`, reply to threads, and can open threads of their own. Threads follow their code when lines move. If the commented code itself changes, the thread is marked **Outdated**.
+`target` is `null` for a working tree review. A thread with no line numbers is about the whole file, a thread with no `file` is a general comment, and `"side": "base"` puts the thread on the old version of the file. `file` is relative to the repository root and uses forward slashes.
 
-## Tests
+The `agentInstructions` field, written into every file, tells the agent to fill in the title and description, reply to open threads, and leave the rest alone. Threads follow their code when lines move. If the commented lines themselves change, the thread is marked **Outdated**.
 
-`npm test` compiles and runs the unit tests.
+## Privacy
+
+Prereview stays on your machine. It does not have an account, a backend, or telemetry. It runs git locally, and the only files it writes are the review files and the snapshots it keeps so it can show what changed since you viewed a file. Those snapshots are git objects in the repository you are reviewing.
+
+Markdown in the overview is rendered without scripts, and images from the network are blocked. The extension does not run in a workspace you have not trusted.
+
+To report a vulnerability, use [GitHub security advisories](https://github.com/MariSchn/Prereview/security/advisories/new).
+
+## FAQ
+
+**Does it work in Cursor?**
+Yes. Install the `.vsix` with `cursor --install-extension`.
+
+**Which agents does it support?**
+Any agent that can edit a file. The review file explains the format, so you only have to send the path.
+
+**Can I commit a review?**
+`.prereview/` is gitignored. Leave it that way if the review is only for you. Force-add a file if you want to share one.
+
+**What about a multi-root workspace?**
+Prereview uses the first folder, and that folder has to be inside the repository.
+
+**What about WSL or a remote SSH window?**
+It runs in the workspace, so it uses the git on that machine.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and pull requests are welcome.
+
+## License
+
+[MIT](LICENSE)

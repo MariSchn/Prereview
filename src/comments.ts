@@ -109,6 +109,10 @@ export class CommentsController implements vscode.Disposable {
       draft.dispose();
       return;
     }
+    if (!reply.text.trim()) {
+      draft.dispose();
+      return;
+    }
     const range = draft.range;
     await this.review.addThread(
       {
@@ -124,7 +128,7 @@ export class CommentsController implements vscode.Disposable {
 
   async reply(reply: vscode.CommentReply): Promise<void> {
     const id = this.idOf(reply.thread);
-    if (id) await this.review?.reply(id, reply.text);
+    if (id && reply.text.trim()) await this.review?.reply(id, reply.text);
   }
 
   async setResolved(thread: vscode.CommentThread, resolved: boolean): Promise<void> {

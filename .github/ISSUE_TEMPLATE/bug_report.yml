@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Prereview doesn't work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead? Screenshots or a screen recording help a lot.
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: What were you reviewing?
+      options:
+        - The working tree
+        - A branch checked out in a git worktree
+        - A branch that isn't checked out
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Prereview version
+      description: Shown in the Extensions view.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: editor
+    attributes:
+      label: Editor, version and OS
+      placeholder: VS Code 1.105 on macOS 26.1, or Cursor 2.0 on Windows 11
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      description: Optional. Which agent replied to the review?
+      placeholder: Claude Code, Codex, Cursor
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors
+      description: Optional. Error messages from Prereview, or lines mentioning prereview under Help › Toggle Developer Tools › Console. Remove anything private.
+      render: text

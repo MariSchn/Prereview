@@ -1,23 +1,52 @@
 {
   "name": "prereview",
   "displayName": "Prereview",
-  "description": "Review agent-written changes locally, GitHub PR style.",
+  "description": "Review your coding agent's changes like a GitHub pull request, locally in your editor.",
   "version": "0.1.0",
   "publisher": "marischn",
+  "license": "MIT",
+  "icon": "media/logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/MariSchn/Prereview.git"
+  },
+  "homepage": "https://github.com/MariSchn/Prereview#readme",
+  "bugs": {
+    "url": "https://github.com/MariSchn/Prereview/issues"
   },
   "engines": {
     "vscode": "^1.99.0"
   },
   "categories": [
-    "Other"
+    "AI",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "code review",
+    "pull request",
+    "ai agent",
+    "claude code",
+    "codex",
+    "cursor",
+    "diff",
+    "git",
+    "worktree",
+    "comments"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Prereview runs git and reads review files in the workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Prereview needs a local git repository."
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -32,11 +61,13 @@
       "prereview": [
         {
           "id": "prereview.reviews",
-          "name": "Reviews"
+          "name": "Reviews",
+          "initialSize": 1
         },
         {
           "id": "prereview.files",
-          "name": "Changed Files"
+          "name": "Changed Files",
+          "initialSize": 3
         }
       ]
     },
@@ -47,7 +78,7 @@
       },
       {
         "view": "prereview.files",
-        "contents": "No active review. Pick one under Reviews or start a new one.\n[Start Review](command:prereview.startReview)"
+        "contents": "No active review. Pick one under Reviews or start a new one."
       }
     ],
     "commands": [
@@ -221,12 +252,12 @@
         {
           "command": "prereview.createThread",
           "group": "inline",
-          "when": "commentController == prereview && commentThreadIsEmpty"
+          "when": "commentController == prereview && commentThreadIsEmpty && !commentIsEmpty"
         },
         {
           "command": "prereview.reply",
           "group": "inline",
-          "when": "commentController == prereview && !commentThreadIsEmpty"
+          "when": "commentController == prereview && !commentThreadIsEmpty && !commentIsEmpty"
         }
       ],
       "comments/commentThread/title": [
@@ -342,10 +373,11 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
-    "package": "vsce package --skip-license"
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

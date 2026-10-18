@@ -45,6 +45,41 @@ test('parseReview reads line, file, base-side and general threads', () => {
   assert.deepStrictEqual(data.threads[0].comments, [{ author: 'agent', body: 'hi', createdAt: undefined }]);
 });
 
+test('parseReview normalizes paths and ignores a byte order mark', () => {
+  const text =
+    '\uFEFF' +
+    JSON.stringify({
+      base: 'main',
+      threads: [
+        { id: 't1', file: './src/a.ts', startLine: '4', comments: [{ body: 'x' }] },
+        { id: 't2', file: 'src\\b.ts', startLine: 2, comments: [{ body: 'y' }] },
+      ],
+    });
+  const data = parseReview(text);
+  assert.deepStrictEqual(
+    data.threads.map((t) => [t.file, t.startLine]),
+    [
+      ['src/a.ts', 4],
+      ['src/b.ts', 2],
+    ],
+  );
+});
+
+test('parseReview turns threads on files outside the repository into general comments', () => {
+  const threads = ['../secret.txt', 'src/../../x', '/etc/passwd', 'C:\\x.txt', 'src/ok..ts'].map((file, i) => ({
+    id: `t${i}`,
+    file,
+    startLine: 1,
+    comments: [{ body: 'x', createdAt: 5 }],
+  }));
+  const data = parseReview(JSON.stringify({ base: 'main', threads }));
+  assert.deepStrictEqual(
+    data.threads.map((t) => [t.file, t.startLine]),
+    [[undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], ['src/ok..ts', 1]],
+  );
+  assert.strictEqual(data.threads[0].comments[0].createdAt, undefined);
+});
+
 test('parseReview gives agent threads without ids a stable, unique id', () => {
   const text = JSON.stringify({ base: 'main', threads: [{ file: 'a.ts', startLine: 1, comments: [{ body: 'x' }] }, { id: 'dup', comments: [{ body: 'a' }] }, { id: 'dup', comments: [{ body: 'b' }] }] });
   const [first, ...rest] = parseReview(text).threads;

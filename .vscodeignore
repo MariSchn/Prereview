@@ -2,6 +2,10 @@ src/**
 out/test/**
 **/*.map
 .vscode/**
+.github/**
+docs/**
+media/logo.svg
 tsconfig.json
 .gitignore
 .prereview/**
+SECURITY.md
