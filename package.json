@@ -174,6 +174,10 @@
         "title": "Reply and Resolve"
       },
       {
+        "command": "prereview.expandThread",
+        "title": "Show Thread"
+      },
+      {
         "command": "prereview.resolve",
         "title": "Resolve",
         "icon": "$(check)"
@@ -200,6 +204,28 @@
         "command": "prereview.deleteComment",
         "title": "Delete",
         "icon": "$(trash)"
+      }
+    ],
+    "colors": [
+      {
+        "id": "prereview.commentRangeBackground",
+        "description": "Background of the lines a new comment will cover while several lines are selected in a review diff.",
+        "defaults": {
+          "dark": "#3794ff26",
+          "light": "#0066bf1a",
+          "highContrast": "#3794ff40",
+          "highContrastLight": "#0066bf33"
+        }
+      },
+      {
+        "id": "prereview.collapsedThreadForeground",
+        "description": "Color of the note after a line with a collapsed, resolved thread in a review diff.",
+        "defaults": {
+          "dark": "editorCodeLens.foreground",
+          "light": "editorCodeLens.foreground",
+          "highContrast": "editorCodeLens.foreground",
+          "highContrastLight": "editorCodeLens.foreground"
+        }
       }
     ],
     "menus": {
@@ -351,6 +377,10 @@
         },
         {
           "command": "prereview.replyAndResolve",
+          "when": "false"
+        },
+        {
+          "command": "prereview.expandThread",
           "when": "false"
         },
         {

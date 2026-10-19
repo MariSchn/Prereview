@@ -36,17 +36,28 @@ export class ReviewComment implements vscode.Comment {
 export class CommentsController implements vscode.Disposable {
   private readonly controller = vscode.comments.createCommentController('prereview', 'Prereview');
   private readonly threads = new Map<string, vscode.CommentThread>();
-  private readonly themeListener: vscode.Disposable;
+  private readonly selectionDecoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor('prereview.commentRangeBackground'),
+  });
+  private readonly hintDecoration = vscode.window.createTextEditorDecorationType({
+    after: { color: new vscode.ThemeColor('prereview.collapsedThreadForeground'), margin: '0 0 0 2em' },
+  });
+  private readonly listeners: vscode.Disposable[];
   private review?: Review;
   private editing?: string;
   private icons: AuthorIcons;
 
   constructor(media: vscode.Uri) {
     this.icons = authorIcons(media);
-    this.themeListener = vscode.window.onDidChangeActiveColorTheme(() => {
-      this.icons = authorIcons(media);
-      this.render();
-    });
+    this.listeners = [
+      vscode.window.onDidChangeActiveColorTheme(() => {
+        this.icons = authorIcons(media);
+        this.render();
+      }),
+      vscode.window.onDidChangeVisibleTextEditors(() => this.decorateThreads()),
+      vscode.window.onDidChangeTextEditorSelection((e) => this.decorateSelection(e.textEditor)),
+    ];
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (doc) =>
         this.review?.locationOf(doc.uri)
@@ -61,6 +72,8 @@ export class CommentsController implements vscode.Disposable {
     this.editing = undefined;
     this.review = review;
     this.render();
+    if (!review) this.decorateThreads();
+    for (const editor of vscode.window.visibleTextEditors) this.decorateSelection(editor);
   }
 
   render(): void {
@@ -100,6 +113,44 @@ export class CommentsController implements vscode.Disposable {
         this.threads.delete(id);
       }
     }
+    this.decorateThreads();
+  }
+
+  expandThread(id: string): void {
+    // A thread's collapsed state is not reported back, so recreate it to be sure it opens.
+    this.threads.get(id)?.dispose();
+    this.threads.delete(id);
+    this.render();
+    const thread = this.threads.get(id);
+    if (thread) thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+  }
+
+  // Resolved threads start collapsed to a small gutter icon, so mark their line in the code too.
+  private decorateThreads(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      const uri = editor.document.uri.toString();
+      const hints: vscode.DecorationOptions[] = [];
+      for (const t of this.review?.data.threads ?? []) {
+        const pos = t.resolved && this.review!.threadUri(t)?.toString() === uri ? this.review!.position(t) : undefined;
+        if (!pos) continue;
+        const hover = new vscode.MarkdownString(`[Show thread](command:prereview.expandThread?${encodeURIComponent(JSON.stringify([t.id]))})`);
+        hover.isTrusted = { enabledCommands: ['prereview.expandThread'] };
+        const line = Math.max(pos.start - 1, 0);
+        hints.push({
+          range: new vscode.Range(line, Number.MAX_SAFE_INTEGER, line, Number.MAX_SAFE_INTEGER),
+          hoverMessage: hover,
+          renderOptions: { after: { contentText: `Resolved thread · ${t.comments.length} comment${t.comments.length === 1 ? '' : 's'}` } },
+        });
+      }
+      editor.setDecorations(this.hintDecoration, hints);
+    }
+  }
+
+  // Comments cover whole lines, and the selection fades once the comment box takes focus.
+  private decorateSelection(editor: vscode.TextEditor): void {
+    const { selection } = editor;
+    const show = this.review?.locationOf(editor.document.uri) && selection.start.line !== selection.end.line;
+    editor.setDecorations(this.selectionDecoration, show ? [selection] : []);
   }
 
   async createThread(reply: vscode.CommentReply): Promise<void> {
@@ -162,7 +213,9 @@ export class CommentsController implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.themeListener.dispose();
+    for (const listener of this.listeners) listener.dispose();
+    this.selectionDecoration.dispose();
+    this.hintDecoration.dispose();
     this.controller.dispose();
   }
 
