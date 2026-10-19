@@ -138,7 +138,7 @@ export class Overview implements vscode.Disposable {
       }
       case 'viewed': {
         const file = review.files.find((f) => f.path === message.path);
-        if (file) await review.setViewed(file, message.viewed === true);
+        if (file) await review.setViewed([file], message.viewed === true);
         return;
       }
     }

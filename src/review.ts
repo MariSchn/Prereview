@@ -263,16 +263,18 @@ export class Review implements vscode.Disposable {
     return this.blobs.get(file.path) === seen ? 'viewed' : 'updated';
   }
 
-  setViewed(file: ChangedFile, viewed: boolean): Promise<void> {
+  setViewed(files: ChangedFile[], viewed: boolean): Promise<void> {
     return this.enqueue(async () => {
       const all = { ...this.viewed() };
       if (viewed) {
-        const blob = await this.blobOf(file, true);
-        if (!blob) return;
-        all[file.path] = blob;
-        this.blobs.set(file.path, blob);
+        const blobs = await this.blobsOf(files, true);
+        files.forEach((f, i) => {
+          if (!blobs[i]) return;
+          all[f.path] = blobs[i];
+          this.blobs.set(f.path, blobs[i]);
+        });
       } else {
-        delete all[file.path];
+        for (const f of files) delete all[f.path];
       }
       await this.state.update(this.viewedKey, all);
       this.changed.fire({ external: false });
@@ -300,10 +302,10 @@ export class Review implements vscode.Disposable {
     return this.state.get<Record<string, string>>(this.viewedKey) ?? {};
   }
 
-  private async blobOf(file: ChangedFile, write: boolean): Promise<string | undefined> {
-    if (file.status === 'D') return DELETED;
-    if (!this.targetDir) return file.blob;
-    return (await hashObjects(this.targetDir, [file.path], write))[0];
+  private async blobsOf(files: ChangedFile[], write: boolean): Promise<(string | undefined)[]> {
+    const present = files.filter((f) => f.status !== 'D');
+    const shas = this.targetDir ? await hashObjects(this.targetDir, present.map((f) => f.path), write) : [];
+    return files.map((f) => (f.status === 'D' ? DELETED : this.targetDir ? shas[present.indexOf(f)] : f.blob));
   }
 
   private async loadChanges(): Promise<void> {

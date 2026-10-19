@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
+import { flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
 import { Thread, ThreadStatus, countStatuses, pairLabel } from './model';
@@ -127,7 +128,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tree.onDidChangeCheckboxState(async (event) => {
       try {
         for (const [node, state] of event.items) {
-          if (node.kind === 'file') await review?.setViewed(node.file, state === vscode.TreeItemCheckboxState.Checked);
+          const changed = node.kind === 'file' ? [node.file] : flatten(node.children);
+          await review?.setViewed(changed, state === vscode.TreeItemCheckboxState.Checked);
         }
       } catch (e) {
         vscode.window.showErrorMessage(`Prereview: ${(e as Error).message}`);
@@ -163,11 +165,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.markViewed', (arg?: FileItem | ChangedFile) => {
       const file = fileArg(arg);
-      if (file) return review?.setViewed(file, true);
+      if (file) return review?.setViewed([file], true);
     }),
     command('prereview.markUnviewed', (arg?: FileItem | ChangedFile) => {
       const file = fileArg(arg);
-      if (file) return review?.setViewed(file, false);
+      if (file) return review?.setViewed([file], false);
     }),
     command('prereview.copyReviewPath', async (entry?: ReviewEntry) => {
       const filePath = entry?.filePath ?? review?.filePath;
