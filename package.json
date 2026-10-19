@@ -297,12 +297,12 @@
       ],
       "comments/comment/context": [
         {
-          "command": "prereview.cancelEdit",
+          "command": "prereview.saveComment",
           "group": "inline@1",
           "when": "commentController == prereview"
         },
         {
-          "command": "prereview.saveComment",
+          "command": "prereview.cancelEdit",
           "group": "inline@2",
           "when": "commentController == prereview"
         }
