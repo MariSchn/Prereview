@@ -206,6 +206,44 @@
         "icon": "$(trash)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+b",
+        "mac": "cmd+b",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "**${1:$TM_SELECTED_TEXT}**$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "_${1:$TM_SELECTED_TEXT}_$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+e",
+        "mac": "cmd+e",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "`${1:$TM_SELECTED_TEXT}`$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "[${1:$TM_SELECTED_TEXT}](${2:url})$0"
+        }
+      }
+    ],
     "colors": [
       {
         "id": "prereview.commentRangeBackground",

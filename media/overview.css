@@ -1433,6 +1433,7 @@ textarea.reply.filled {
 
 .buttons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -1450,6 +1451,25 @@ textarea.reply.filled {
 
 .editor {
   margin-top: 4px;
+}
+
+.toolbar {
+  display: flex;
+  margin-right: auto;
+  margin-left: -4px;
+}
+
+.toolbar:has(+ .hint) {
+  margin-right: 6px;
+}
+
+.toolbar .icon-button {
+  width: 26px;
+}
+
+.toolbar .icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* Groups */
@@ -1707,6 +1727,7 @@ body.vscode-high-contrast .clean-art .tick {
 
 .composer-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 6px 6px 12px;
