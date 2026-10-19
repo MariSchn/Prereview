@@ -126,9 +126,9 @@ export class CommentsController implements vscode.Disposable {
     draft.dispose();
   }
 
-  async reply(reply: vscode.CommentReply): Promise<void> {
+  async reply(reply: vscode.CommentReply, resolve = false): Promise<void> {
     const id = this.idOf(reply.thread);
-    if (id && reply.text.trim()) await this.review?.reply(id, reply.text);
+    if (id && reply.text.trim()) await this.review?.reply(id, reply.text, resolve);
   }
 
   async setResolved(thread: vscode.CommentThread, resolved: boolean): Promise<void> {

@@ -738,14 +738,22 @@
 
   function replyBox(t) {
     const area = textarea(`reply:${t.id}`, { class: 'reply', rows: 1, placeholder: 'Reply…' });
-    const send = () => {
+    const canResolve = t.status !== 'resolved';
+    const send = (resolve) => {
       const body = area.value.trim();
       if (!body) return;
-      post({ type: 'reply', id: t.id, body });
+      post({ type: 'reply', id: t.id, body, resolve });
       area.value = '';
       area.dispatchEvent(new Event('input'));
     };
-    onSubmit(area, send);
+    area.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        send(canResolve && event.shiftKey);
+      }
+    });
+    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check') : null;
+    resolveButton?.setAttribute('title', `${MAC ? '⇧⌘' : 'Ctrl+Shift+'}Enter`);
     return h(
       'div',
       { class: 'reply-box' },
@@ -754,7 +762,13 @@
         'div',
         { class: 'reply-main' },
         area,
-        h('div', { class: 'buttons' }, h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'), button('Reply', 'primary', send)),
+        h(
+          'div',
+          { class: 'buttons' },
+          h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'),
+          resolveButton,
+          button('Reply', 'primary', () => send(false)),
+        ),
       ),
     );
   }

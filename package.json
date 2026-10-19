@@ -164,6 +164,10 @@
         "title": "Reply"
       },
       {
+        "command": "prereview.replyAndResolve",
+        "title": "Reply and Resolve"
+      },
+      {
         "command": "prereview.resolve",
         "title": "Resolve",
         "icon": "$(check)"
@@ -267,8 +271,13 @@
         },
         {
           "command": "prereview.reply",
-          "group": "inline",
+          "group": "inline@1",
           "when": "commentController == prereview && !commentThreadIsEmpty && !commentIsEmpty"
+        },
+        {
+          "command": "prereview.replyAndResolve",
+          "group": "inline@2",
+          "when": "commentController == prereview && !commentThreadIsEmpty && !commentIsEmpty && commentThread == unresolved"
         }
       ],
       "comments/commentThread/title": [
@@ -322,6 +331,10 @@
         },
         {
           "command": "prereview.reply",
+          "when": "false"
+        },
+        {
+          "command": "prereview.replyAndResolve",
           "when": "false"
         },
         {

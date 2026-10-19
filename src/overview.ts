@@ -113,7 +113,7 @@ export class Overview implements vscode.Disposable {
         return;
       }
       case 'reply':
-        if (body) await review.reply(message.id, body);
+        if (body) await review.reply(message.id, body, message.resolve === true);
         return;
       case 'resolve':
         return review.setResolved(message.id, message.resolved === true);

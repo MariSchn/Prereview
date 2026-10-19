@@ -192,6 +192,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.createThread', (reply: vscode.CommentReply) => comments.createThread(reply)),
     command('prereview.reply', (reply: vscode.CommentReply) => comments.reply(reply)),
+    command('prereview.replyAndResolve', (reply: vscode.CommentReply) => comments.reply(reply, true)),
     command('prereview.resolve', (thread: vscode.CommentThread) => comments.setResolved(thread, true)),
     command('prereview.unresolve', (thread: vscode.CommentThread) => comments.setResolved(thread, false)),
     command('prereview.editComment', (comment: ReviewComment) => comments.editComment(comment)),

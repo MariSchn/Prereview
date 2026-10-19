@@ -175,8 +175,11 @@ export class Review implements vscode.Disposable {
     return this.update((data) => data.threads.push({ id: newId(), ...location, snippet, resolved: false, comments: [newComment(body)] }));
   }
 
-  reply(id: string, body: string): Promise<void> {
-    return this.updateThread(id, (t) => t.comments.push(newComment(body)));
+  reply(id: string, body: string, resolve = false): Promise<void> {
+    return this.updateThread(id, (t) => {
+      t.comments.push(newComment(body));
+      if (resolve) t.resolved = true;
+    });
   }
 
   setResolved(id: string, resolved: boolean): Promise<void> {
