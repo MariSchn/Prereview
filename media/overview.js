@@ -102,6 +102,14 @@
     trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/>',
     outdated: '<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/>',
     chevron: '<path d="m6 3.75 4.25 4.25L6 12.25"/>',
+    bold: '<path d="M4.75 2.75h3.75a2.6 2.6 0 0 1 0 5.25H4.75zM4.75 8h4.5a2.6 2.6 0 0 1 0 5.25h-4.5z"/>',
+    italic: '<path d="M6.75 2.75h5M4.25 13.25h5M9.5 2.75 6.5 13.25"/>',
+    code: '<path d="M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5"/>',
+    link: '<path d="M6.75 9.25a2.75 2.75 0 0 0 3.9 0l2-2a2.75 2.75 0 0 0-3.9-3.9l-.75.75"/><path d="M9.25 6.75a2.75 2.75 0 0 0-3.9 0l-2 2a2.75 2.75 0 0 0 3.9 3.9l.75-.75"/>',
+    quote: '<path d="M3 3.5v9M6.5 5.5h6.5M6.5 8h6.5M6.5 10.5h4"/>',
+    bullets: '<circle class="f" cx="3" cy="4.5" r="1"/><circle class="f" cx="3" cy="8" r="1"/><circle class="f" cx="3" cy="11.5" r="1"/><path d="M6 4.5h7.5M6 8h7.5M6 11.5h7.5"/>',
+    numbers: '<path d="M2.5 3.25h1v3.25M2.5 6.5h2M2.5 9.75h1.75l-1.75 2.75h2"/><path d="M7 4.5h6.5M7 8h6.5M7 11.5h6.5"/>',
+    history: '<path d="M2.75 8a5.25 5.25 0 1 0 1.54-3.71"/><path d="M2.5 2.25v2.75h2.75"/><path d="M8 5v3.25l2.25 1.5"/>',
     circle: '<circle cx="8" cy="8" r="6"/>',
     awaitingYou: '<circle cx="8" cy="8" r="6"/><circle class="f" cx="8" cy="8" r="2.75"/>',
     awaitingAgent: '<circle cx="8" cy="8" r="6"/><path class="f" d="M8 4.25a3.75 3.75 0 0 1 0 7.5z"/>',
@@ -210,11 +218,64 @@
     return new Date(iso).toLocaleDateString();
   }
 
+  const FORMATS = {
+    bold: { label: 'Bold', key: 'b', wrap: ['**', '**'] },
+    italic: { label: 'Italic', key: 'i', wrap: ['_', '_'] },
+    code: { label: 'Code', key: 'e', wrap: ['`', '`'], block: ['```\n', '\n```'] },
+    link: { label: 'Link', key: 'k', wrap: ['[', '](url)'] },
+    quote: { label: 'Quote', prefix: () => '> ' },
+    bullets: { label: 'Bulleted list', prefix: () => '- ' },
+    numbers: { label: 'Numbered list', prefix: (i) => `${i + 1}. ` },
+  };
+
+  function format(area, name) {
+    const f = FORMATS[name];
+    const { selectionStart: start, selectionEnd: end, value } = area;
+    const selected = value.slice(start, end);
+    area.focus();
+    if (f.prefix) {
+      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+      area.setSelectionRange(lineStart, end);
+      // insertText keeps the change on the textarea's undo stack.
+      document.execCommand('insertText', false, value.slice(lineStart, end).split('\n').map((line, i) => f.prefix(i) + line).join('\n'));
+      return;
+    }
+    const [before, after] = f.block && selected.includes('\n') ? f.block : f.wrap;
+    document.execCommand('insertText', false, before + selected + after);
+    const inner = start + before.length;
+    if (name === 'link' && selected) area.setSelectionRange(inner + selected.length + 2, inner + selected.length + 5);
+    else area.setSelectionRange(inner, inner + selected.length);
+  }
+
+  function toolbar(area) {
+    const mod = MAC ? '⌘' : 'Ctrl+';
+    return h(
+      'span',
+      { class: 'toolbar' },
+      Object.entries(FORMATS).map(([name, f]) => {
+        const label = f.key ? `${f.label} (${mod}${f.key.toUpperCase()})` : f.label;
+        const el = iconButton(name, label, () => format(area, name));
+        // Keep the focus and selection in the textarea.
+        el.addEventListener('mousedown', (event) => event.preventDefault());
+        return el;
+      }),
+    );
+  }
+
   function textarea(key, props, initial = '') {
     const area = h('textarea', { 'data-key': key, ...props });
     area.value = initial;
     const sync = () => area.classList.toggle('filled', area.value.trim() !== '');
     area.addEventListener('input', sync);
+    area.addEventListener('keydown', (event) => {
+      if (!(MAC ? event.metaKey : event.ctrlKey) || event.shiftKey || event.altKey) return;
+      const name = Object.keys(FORMATS).find((n) => FORMATS[n].key === event.key.toLowerCase());
+      if (!name) return;
+      // Don't let the webview forward the key to VS Code, where Ctrl/Cmd+B toggles the sidebar.
+      event.preventDefault();
+      event.stopPropagation();
+      format(area, name);
+    });
     sync();
     return area;
   }
@@ -429,6 +490,23 @@
               : null,
           )
         : null,
+      updated
+        ? h(
+            'a',
+            {
+              class: 'since-viewed',
+              href: '#',
+              'data-key': 'since-viewed',
+              onclick: (event) => {
+                event.preventDefault();
+                post({ type: 'command', name: 'openAllSinceViewed' });
+              },
+            },
+            icon('history'),
+            h('span', {}, `${plural(updated, 'file')} changed since you viewed ${updated === 1 ? 'it' : 'them'}`),
+            h('span', { class: 'since-viewed-action' }, 'Show changes'),
+          )
+        : null,
     );
   }
 
@@ -463,6 +541,7 @@
 
   function filesCard() {
     if (!state.files.length) return null;
+    const updated = state.files.some((f) => f.viewed === 'updated');
     return h(
       'section',
       { class: 'card files-card' },
@@ -472,9 +551,10 @@
         h('strong', {}, 'Files'),
         h('span', { class: 'count' }, state.files.length),
         h('span', { class: 'spacer' }),
+        updated ? iconButton('history', 'Open all changes since viewed', command('openAllSinceViewed')) : null,
         iconButton('diff', 'Open all changes', command('openAllChanges')),
       ),
-      h('ul', { class: 'file-list' }, state.files.map(fileRow)),
+      h('ul', { class: `file-list${updated ? ' has-updated' : ''}` }, state.files.map(fileRow)),
     );
   }
 
@@ -520,6 +600,9 @@
         h('span', { class: 'deleted' }, f.deleted ? `−${f.deleted}` : ''),
         h('span', { class: `file-status ${f.status}`, title: FILE_STATUS[f.status] }, f.status),
       ),
+      f.viewed === 'updated'
+        ? iconButton('history', 'Open changes since viewed', () => post({ type: 'sinceViewed', path: f.path }), 'since-viewed-file')
+        : h('span'),
     );
   }
 
@@ -732,20 +815,28 @@
       'div',
       { class: 'editor' },
       area,
-      h('div', { class: 'buttons' }, button('Cancel', 'ghost', cancel), button('Save', 'primary', save)),
+      h('div', { class: 'buttons' }, toolbar(area), button('Cancel', 'ghost', cancel), button('Save', 'primary', save)),
     );
   }
 
   function replyBox(t) {
     const area = textarea(`reply:${t.id}`, { class: 'reply', rows: 1, placeholder: 'Reply…' });
-    const send = () => {
+    const canResolve = t.status !== 'resolved';
+    const send = (resolve) => {
       const body = area.value.trim();
       if (!body) return;
-      post({ type: 'reply', id: t.id, body });
+      post({ type: 'reply', id: t.id, body, resolve });
       area.value = '';
       area.dispatchEvent(new Event('input'));
     };
-    onSubmit(area, send);
+    area.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        send(canResolve && event.shiftKey);
+      }
+    });
+    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check') : null;
+    resolveButton?.setAttribute('title', `${MAC ? '⇧⌘' : 'Ctrl+Shift+'}Enter`);
     return h(
       'div',
       { class: 'reply-box' },
@@ -754,7 +845,14 @@
         'div',
         { class: 'reply-main' },
         area,
-        h('div', { class: 'buttons' }, h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'), button('Reply', 'primary', send)),
+        h(
+          'div',
+          { class: 'buttons' },
+          toolbar(area),
+          h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'),
+          resolveButton,
+          button('Reply', 'primary', () => send(false)),
+        ),
       ),
     );
   }
@@ -780,6 +878,7 @@
         h(
           'div',
           { class: 'composer-foot' },
+          toolbar(area),
           h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'),
           button('Comment', 'primary', send),
         ),

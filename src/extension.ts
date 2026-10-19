@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
+import { flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
 import { Thread, ThreadStatus, countStatuses, pairLabel } from './model';
@@ -35,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const file = activeFile();
     const state = file && review?.viewState(file) === 'viewed' ? 'viewed' : file ? 'unviewed' : undefined;
     vscode.commands.executeCommand('setContext', 'prereview.activeFile', state);
+    vscode.commands.executeCommand('setContext', 'prereview.activeFileUpdated', !!file && review?.viewState(file) === 'updated');
   };
 
   const updateUi = (change: ReviewChange) => {
@@ -44,11 +46,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const next = countStatuses(review?.data.threads ?? []);
     if (review) {
       const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
+      const updated = review.files.filter((f) => review!.viewState(f) === 'updated').length;
       tree.description = review.title;
       tree.message = review.changesError
         ? review.changesError
         : review.files.length
-          ? `${viewed} of ${review.files.length} files viewed`
+          ? `${viewed} of ${review.files.length} files viewed${updated ? ` · ${updated} changed since viewed` : ''}`
           : undefined;
       statusItem.text = statusText(next);
       statusItem.tooltip = `Prereview: ${review.title}`;
@@ -68,6 +71,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const noFiles = !!review && review.files.length === 0;
     const clean = noFiles && review !== undefined && !review.changesError && review.data.threads.length === 0;
     vscode.commands.executeCommand('setContext', 'prereview.noFiles', noFiles);
+    vscode.commands.executeCommand('setContext', 'prereview.hasUpdated', !!review?.files.some((f) => review!.viewState(f) === 'updated'));
     vscode.commands.executeCommand('setContext', 'prereview.noChanges', clean);
     vscode.commands.executeCommand('setContext', 'prereview.emptyDiff', noFiles && !clean && !review?.changesError);
   };
@@ -127,7 +131,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tree.onDidChangeCheckboxState(async (event) => {
       try {
         for (const [node, state] of event.items) {
-          if (node.kind === 'file') await review?.setViewed(node.file, state === vscode.TreeItemCheckboxState.Checked);
+          const changed = node.kind === 'file' ? [node.file] : flatten(node.children);
+          await review?.setViewed(changed, state === vscode.TreeItemCheckboxState.Checked);
         }
       } catch (e) {
         vscode.window.showErrorMessage(`Prereview: ${(e as Error).message}`);
@@ -154,6 +159,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const uris = file && review?.sinceViewedUris(file);
       if (file && uris) return vscode.commands.executeCommand('vscode.diff', ...uris, `${path.posix.basename(file.path)} (since viewed)`);
     }),
+    command('prereview.openAllSinceViewed', () => {
+      if (!review) return;
+      const resources = files.orderedFiles.flatMap((f) => {
+        const uris = review!.sinceViewedUris(f);
+        return uris && review!.viewState(f) === 'updated' ? [[uris[1], ...uris]] : [];
+      });
+      if (resources.length) return vscode.commands.executeCommand('vscode.changes', `Since viewed: ${review.title}`, resources);
+    }),
     command('prereview.openAllChanges', () => {
       if (!review) return;
       if (!review.files.length) return overview.show();
@@ -163,11 +176,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.markViewed', (arg?: FileItem | ChangedFile) => {
       const file = fileArg(arg);
-      if (file) return review?.setViewed(file, true);
+      if (file) return review?.setViewed([file], true);
     }),
     command('prereview.markUnviewed', (arg?: FileItem | ChangedFile) => {
       const file = fileArg(arg);
-      if (file) return review?.setViewed(file, false);
+      if (file) return review?.setViewed([file], false);
     }),
     command('prereview.copyReviewPath', async (entry?: ReviewEntry) => {
       const filePath = entry?.filePath ?? review?.filePath;
@@ -192,6 +205,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command('prereview.createThread', (reply: vscode.CommentReply) => comments.createThread(reply)),
     command('prereview.reply', (reply: vscode.CommentReply) => comments.reply(reply)),
+    command('prereview.replyAndResolve', (reply: vscode.CommentReply) => comments.reply(reply, true)),
+    command('prereview.expandThread', (id: string) => comments.expandThread(id)),
     command('prereview.resolve', (thread: vscode.CommentThread) => comments.setResolved(thread, true)),
     command('prereview.unresolve', (thread: vscode.CommentThread) => comments.setResolved(thread, false)),
     command('prereview.editComment', (comment: ReviewComment) => comments.editComment(comment)),

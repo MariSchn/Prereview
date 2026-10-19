@@ -152,6 +152,12 @@
         "icon": "$(history)"
       },
       {
+        "command": "prereview.openAllSinceViewed",
+        "title": "Open All Changes Since Viewed",
+        "category": "Prereview",
+        "icon": "$(history)"
+      },
+      {
         "command": "prereview.openDiff",
         "title": "Open Diff"
       },
@@ -162,6 +168,14 @@
       {
         "command": "prereview.reply",
         "title": "Reply"
+      },
+      {
+        "command": "prereview.replyAndResolve",
+        "title": "Reply and Resolve"
+      },
+      {
+        "command": "prereview.expandThread",
+        "title": "Show Thread"
       },
       {
         "command": "prereview.resolve",
@@ -192,6 +206,66 @@
         "icon": "$(trash)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+b",
+        "mac": "cmd+b",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "**${1:$TM_SELECTED_TEXT}**$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "_${1:$TM_SELECTED_TEXT}_$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+e",
+        "mac": "cmd+e",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "`${1:$TM_SELECTED_TEXT}`$0"
+        }
+      },
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "commentEditorFocused && commentController == prereview",
+        "args": {
+          "snippet": "[${1:$TM_SELECTED_TEXT}](${2:url})$0"
+        }
+      }
+    ],
+    "colors": [
+      {
+        "id": "prereview.commentRangeBackground",
+        "description": "Background of the lines a new comment will cover while several lines are selected in a review diff.",
+        "defaults": {
+          "dark": "#3794ff26",
+          "light": "#0066bf1a",
+          "highContrast": "#3794ff40",
+          "highContrastLight": "#0066bf33"
+        }
+      },
+      {
+        "id": "prereview.collapsedThreadForeground",
+        "description": "Color of the note after a line with a collapsed, resolved thread in a review diff.",
+        "defaults": {
+          "dark": "editorCodeLens.foreground",
+          "light": "editorCodeLens.foreground",
+          "highContrast": "editorCodeLens.foreground",
+          "highContrastLight": "editorCodeLens.foreground"
+        }
+      }
+    ],
     "menus": {
       "view/title": [
         {
@@ -210,9 +284,14 @@
           "group": "navigation@2"
         },
         {
+          "command": "prereview.openAllSinceViewed",
+          "when": "view == prereview.files && prereview.hasUpdated",
+          "group": "navigation@3"
+        },
+        {
           "command": "prereview.copyReviewPath",
           "when": "view == prereview.files && prereview.active",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "prereview.startReview",
@@ -257,6 +336,11 @@
           "command": "prereview.markUnviewed",
           "when": "prereview.activeFile == viewed",
           "group": "navigation"
+        },
+        {
+          "command": "prereview.openSinceViewed",
+          "when": "prereview.activeFileUpdated",
+          "group": "navigation"
         }
       ],
       "comments/commentThread/context": [
@@ -267,8 +351,13 @@
         },
         {
           "command": "prereview.reply",
-          "group": "inline",
+          "group": "inline@1",
           "when": "commentController == prereview && !commentThreadIsEmpty && !commentIsEmpty"
+        },
+        {
+          "command": "prereview.replyAndResolve",
+          "group": "inline@2",
+          "when": "commentController == prereview && !commentThreadIsEmpty && !commentIsEmpty && commentThread == unresolved"
         }
       ],
       "comments/commentThread/title": [
@@ -297,12 +386,12 @@
       ],
       "comments/comment/context": [
         {
-          "command": "prereview.cancelEdit",
+          "command": "prereview.saveComment",
           "group": "inline@1",
           "when": "commentController == prereview"
         },
         {
-          "command": "prereview.saveComment",
+          "command": "prereview.cancelEdit",
           "group": "inline@2",
           "when": "commentController == prereview"
         }
@@ -322,6 +411,14 @@
         },
         {
           "command": "prereview.reply",
+          "when": "false"
+        },
+        {
+          "command": "prereview.replyAndResolve",
+          "when": "false"
+        },
+        {
+          "command": "prereview.expandThread",
           "when": "false"
         },
         {
@@ -378,7 +475,11 @@
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "false"
+          "when": "prereview.activeFileUpdated"
+        },
+        {
+          "command": "prereview.openAllSinceViewed",
+          "when": "prereview.hasUpdated"
         }
       ]
     }

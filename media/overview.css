@@ -427,6 +427,38 @@ kbd {
   border-top: 1px solid var(--border-soft);
 }
 
+.since-viewed {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.92em;
+  text-decoration: none;
+}
+
+.since-viewed .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--you);
+}
+
+.since-viewed-action {
+  color: var(--vscode-textLink-foreground);
+}
+
+.since-viewed:hover .since-viewed-action {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.since-viewed:focus-visible {
+  border-radius: 2px;
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
 .meter-label {
   display: flex;
   justify-content: space-between;
@@ -514,6 +546,10 @@ kbd {
   color: var(--fg);
 }
 
+.file-list.has-updated {
+  grid-template-columns: auto minmax(0, 1fr) repeat(5, auto);
+}
+
 .file-link {
   display: grid;
   grid-column: 2 / -1;
@@ -524,6 +560,17 @@ kbd {
   text-decoration: none;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.file-list.has-updated .file-link {
+  grid-column: 2 / -2;
+}
+
+.since-viewed-file {
+  width: 22px;
+  height: 22px;
+  margin-right: -6px;
+  color: var(--you);
 }
 
 .file-link > .added,
@@ -1386,6 +1433,7 @@ textarea.reply.filled {
 
 .buttons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -1403,6 +1451,25 @@ textarea.reply.filled {
 
 .editor {
   margin-top: 4px;
+}
+
+.toolbar {
+  display: flex;
+  margin-right: auto;
+  margin-left: -4px;
+}
+
+.toolbar:has(+ .hint) {
+  margin-right: 6px;
+}
+
+.toolbar .icon-button {
+  width: 26px;
+}
+
+.toolbar .icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* Groups */
@@ -1660,6 +1727,7 @@ body.vscode-high-contrast .clean-art .tick {
 
 .composer-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 6px 6px 12px;

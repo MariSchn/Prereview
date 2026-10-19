@@ -24,7 +24,7 @@ interface ThreadView {
   comments: CommentView[];
 }
 
-const COMMANDS = ['openAllChanges', 'finishReview', 'refresh'];
+const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
@@ -113,7 +113,7 @@ export class Overview implements vscode.Disposable {
         return;
       }
       case 'reply':
-        if (body) await review.reply(message.id, body);
+        if (body) await review.reply(message.id, body, message.resolve === true);
         return;
       case 'resolve':
         return review.setResolved(message.id, message.resolved === true);
@@ -136,9 +136,14 @@ export class Overview implements vscode.Disposable {
         if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
         return;
       }
+      case 'sinceViewed': {
+        const file = review.files.find((f) => f.path === message.path);
+        if (file) await vscode.commands.executeCommand('prereview.openSinceViewed', file);
+        return;
+      }
       case 'viewed': {
         const file = review.files.find((f) => f.path === message.path);
-        if (file) await review.setViewed(file, message.viewed === true);
+        if (file) await review.setViewed([file], message.viewed === true);
         return;
       }
     }

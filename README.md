@@ -44,7 +44,7 @@ Prereview needs VS Code 1.99 or later and a local git repository. It is not publ
    - **Working tree** is the branch you have open, plus uncommitted changes.
    - **Another branch** shows that branch's commits. If the branch is checked out in another worktree, for example an agent's, the review includes that worktree's uncommitted changes, and you can edit the code right in the diff.
 2. The overview works like a pull request's Conversation tab. It shows the title and description, every thread, and a box for a general comment.
-3. **Changed Files** lists the diff as a tree, with additions and deletions. Click a file to open it. Tick a file once you have reviewed it. If it changes after that, it is unticked, and **Open Changes Since Viewed** shows only the new part.
+3. **Changed Files** lists the diff as a tree, with additions and deletions. Click a file to open it. Tick a file, or a whole folder, once you have reviewed it. If it changes after that, it is unticked, and **Open Changes Since Viewed** (in the file's row, the diff's title bar and the overview) shows only the new part. **Open All Changes Since Viewed** shows them for every such file at once.
 4. Hover the line numbers in a diff and click **+** to comment. Drag to cover a range. You can also comment on a whole file, on a deleted line, or on the change as a whole. Resolve a thread when you are done with it.
 5. Click **Copy path for agent** and paste the path into Claude Code, Codex, Cursor, or whichever agent made the change. The review file tells it how to reply. Replies show up on their own. The badge on the Prereview icon counts threads waiting on you.
 6. **Finish review** deletes the review and its comments.

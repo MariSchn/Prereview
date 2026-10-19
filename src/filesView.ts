@@ -41,6 +41,11 @@ export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>
       item.id = `folder:${node.path}`;
       item.resourceUri = vscode.Uri.from({ scheme: DECORATION_SCHEME, path: '/' + node.path });
       item.iconPath = vscode.ThemeIcon.Folder;
+      const viewed = flatten(node.children).every((f) => this.review!.viewState(f) === 'viewed');
+      item.checkboxState = {
+        state: viewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked,
+        tooltip: viewed ? 'Mark folder as not viewed' : 'Mark folder as viewed',
+      };
       return item;
     }
     const review = this.review!;
