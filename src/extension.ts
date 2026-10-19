@@ -36,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const file = activeFile();
     const state = file && review?.viewState(file) === 'viewed' ? 'viewed' : file ? 'unviewed' : undefined;
     vscode.commands.executeCommand('setContext', 'prereview.activeFile', state);
+    vscode.commands.executeCommand('setContext', 'prereview.activeFileUpdated', !!file && review?.viewState(file) === 'updated');
   };
 
   const updateUi = (change: ReviewChange) => {
@@ -45,11 +46,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const next = countStatuses(review?.data.threads ?? []);
     if (review) {
       const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
+      const updated = review.files.filter((f) => review!.viewState(f) === 'updated').length;
       tree.description = review.title;
       tree.message = review.changesError
         ? review.changesError
         : review.files.length
-          ? `${viewed} of ${review.files.length} files viewed`
+          ? `${viewed} of ${review.files.length} files viewed${updated ? ` · ${updated} changed since viewed` : ''}`
           : undefined;
       statusItem.text = statusText(next);
       statusItem.tooltip = `Prereview: ${review.title}`;
@@ -69,6 +71,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const noFiles = !!review && review.files.length === 0;
     const clean = noFiles && review !== undefined && !review.changesError && review.data.threads.length === 0;
     vscode.commands.executeCommand('setContext', 'prereview.noFiles', noFiles);
+    vscode.commands.executeCommand('setContext', 'prereview.hasUpdated', !!review?.files.some((f) => review!.viewState(f) === 'updated'));
     vscode.commands.executeCommand('setContext', 'prereview.noChanges', clean);
     vscode.commands.executeCommand('setContext', 'prereview.emptyDiff', noFiles && !clean && !review?.changesError);
   };
@@ -155,6 +158,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const file = fileArg(arg);
       const uris = file && review?.sinceViewedUris(file);
       if (file && uris) return vscode.commands.executeCommand('vscode.diff', ...uris, `${path.posix.basename(file.path)} (since viewed)`);
+    }),
+    command('prereview.openAllSinceViewed', () => {
+      if (!review) return;
+      const resources = files.orderedFiles.flatMap((f) => {
+        const uris = review!.sinceViewedUris(f);
+        return uris && review!.viewState(f) === 'updated' ? [[uris[1], ...uris]] : [];
+      });
+      if (resources.length) return vscode.commands.executeCommand('vscode.changes', `Since viewed: ${review.title}`, resources);
     }),
     command('prereview.openAllChanges', () => {
       if (!review) return;

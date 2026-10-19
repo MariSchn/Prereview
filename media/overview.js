@@ -102,6 +102,7 @@
     trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/>',
     outdated: '<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/>',
     chevron: '<path d="m6 3.75 4.25 4.25L6 12.25"/>',
+    history: '<path d="M2.75 8a5.25 5.25 0 1 0 1.54-3.71"/><path d="M2.5 2.25v2.75h2.75"/><path d="M8 5v3.25l2.25 1.5"/>',
     circle: '<circle cx="8" cy="8" r="6"/>',
     awaitingYou: '<circle cx="8" cy="8" r="6"/><circle class="f" cx="8" cy="8" r="2.75"/>',
     awaitingAgent: '<circle cx="8" cy="8" r="6"/><path class="f" d="M8 4.25a3.75 3.75 0 0 1 0 7.5z"/>',
@@ -429,6 +430,23 @@
               : null,
           )
         : null,
+      updated
+        ? h(
+            'a',
+            {
+              class: 'since-viewed',
+              href: '#',
+              'data-key': 'since-viewed',
+              onclick: (event) => {
+                event.preventDefault();
+                post({ type: 'command', name: 'openAllSinceViewed' });
+              },
+            },
+            icon('history'),
+            h('span', {}, `${plural(updated, 'file')} changed since you viewed ${updated === 1 ? 'it' : 'them'}`),
+            h('span', { class: 'since-viewed-action' }, 'Show changes'),
+          )
+        : null,
     );
   }
 
@@ -463,6 +481,7 @@
 
   function filesCard() {
     if (!state.files.length) return null;
+    const updated = state.files.some((f) => f.viewed === 'updated');
     return h(
       'section',
       { class: 'card files-card' },
@@ -472,9 +491,10 @@
         h('strong', {}, 'Files'),
         h('span', { class: 'count' }, state.files.length),
         h('span', { class: 'spacer' }),
+        updated ? iconButton('history', 'Open all changes since viewed', command('openAllSinceViewed')) : null,
         iconButton('diff', 'Open all changes', command('openAllChanges')),
       ),
-      h('ul', { class: 'file-list' }, state.files.map(fileRow)),
+      h('ul', { class: `file-list${updated ? ' has-updated' : ''}` }, state.files.map(fileRow)),
     );
   }
 
@@ -520,6 +540,9 @@
         h('span', { class: 'deleted' }, f.deleted ? `−${f.deleted}` : ''),
         h('span', { class: `file-status ${f.status}`, title: FILE_STATUS[f.status] }, f.status),
       ),
+      f.viewed === 'updated'
+        ? iconButton('history', 'Open changes since viewed', () => post({ type: 'sinceViewed', path: f.path }), 'since-viewed-file')
+        : h('span'),
     );
   }
 

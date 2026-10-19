@@ -152,6 +152,12 @@
         "icon": "$(history)"
       },
       {
+        "command": "prereview.openAllSinceViewed",
+        "title": "Open All Changes Since Viewed",
+        "category": "Prereview",
+        "icon": "$(history)"
+      },
+      {
         "command": "prereview.openDiff",
         "title": "Open Diff"
       },
@@ -214,9 +220,14 @@
           "group": "navigation@2"
         },
         {
+          "command": "prereview.openAllSinceViewed",
+          "when": "view == prereview.files && prereview.hasUpdated",
+          "group": "navigation@3"
+        },
+        {
           "command": "prereview.copyReviewPath",
           "when": "view == prereview.files && prereview.active",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "prereview.startReview",
@@ -260,6 +271,11 @@
         {
           "command": "prereview.markUnviewed",
           "when": "prereview.activeFile == viewed",
+          "group": "navigation"
+        },
+        {
+          "command": "prereview.openSinceViewed",
+          "when": "prereview.activeFileUpdated",
           "group": "navigation"
         }
       ],
@@ -391,7 +407,11 @@
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "false"
+          "when": "prereview.activeFileUpdated"
+        },
+        {
+          "command": "prereview.openAllSinceViewed",
+          "when": "prereview.hasUpdated"
         }
       ]
     }

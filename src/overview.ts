@@ -24,7 +24,7 @@ interface ThreadView {
   comments: CommentView[];
 }
 
-const COMMANDS = ['openAllChanges', 'finishReview', 'refresh'];
+const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
@@ -134,6 +134,11 @@ export class Overview implements vscode.Disposable {
       case 'openFile': {
         const file = review.files.find((f) => f.path === message.path);
         if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
+        return;
+      }
+      case 'sinceViewed': {
+        const file = review.files.find((f) => f.path === message.path);
+        if (file) await vscode.commands.executeCommand('prereview.openSinceViewed', file);
         return;
       }
       case 'viewed': {
