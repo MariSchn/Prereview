@@ -177,6 +177,7 @@ export class Review implements vscode.Disposable {
       this.targetDir,
       [...this.blobs],
       [...this.positions],
+      [...this.sources],
     ]);
     if (snapshot === this.snapshot) return;
     this.snapshot = snapshot;
@@ -301,9 +302,9 @@ export class Review implements vscode.Disposable {
         for (const f of files) {
           if (this.pendingViewed.get(f.path) === viewed) this.pendingViewed.delete(f.path);
         }
+        this.snapshot = undefined;
+        this.changed.fire({ external: false });
       }
-      this.snapshot = undefined;
-      this.changed.fire({ external: false });
     });
   }
 
@@ -398,10 +399,11 @@ export class Review implements vscode.Disposable {
 
   private watch(dir: string): vscode.FileSystemWatcher {
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '**/*'));
-    // Git writes to .git all the time (index, objects, logs); only refs and worktrees affect the review.
+    // Git writes to .git all the time (objects, logs); only refs, the index, excludes and worktrees affect the review.
     const schedule = (uri: vscode.Uri) => {
       const rel = path.relative(dir, uri.fsPath).split(path.sep).join('/');
-      if (rel.startsWith('.git/') && !/^\.git\/(HEAD$|packed-refs$|refs\/|worktrees\/[^/]+(\/HEAD)?$)/.test(rel)) return;
+      const relevant = /^\.git\/(HEAD$|packed-refs$|index$|info\/exclude$|refs\/|reftable\/|worktrees\/[^/]+(\/(HEAD|index))?$)/;
+      if (rel.startsWith('.git/') && !relevant.test(rel)) return;
       this.scheduleRefresh();
     };
     watcher.onDidChange(schedule);

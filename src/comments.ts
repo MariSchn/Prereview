@@ -88,6 +88,7 @@ export class CommentsController implements vscode.Disposable {
     this.threads.clear();
     this.editing = undefined;
     this.review = review;
+    this.updateCommentingRanges();
     this.render();
     if (!review) this.decorateThreads();
     for (const editor of vscode.window.visibleTextEditors) this.decorateSelection(editor);
