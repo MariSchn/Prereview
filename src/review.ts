@@ -87,6 +87,7 @@ export class Review implements vscode.Disposable {
   private positions = new Map<string, Position>();
   private sources = new Map<string, string[] | undefined>();
   private blobs = new Map<string, string>();
+  private snapshot?: string;
   files: ChangedFile[] = [];
   changesError?: string;
   targetDir?: string;
@@ -165,6 +166,19 @@ export class Review implements vscode.Disposable {
     }
     this.warnings = new Set(warnings);
     await this.reanchor();
+    // Unrelated file activity triggers refreshes too; redrawing the views each time makes them flicker.
+    const snapshot = JSON.stringify([
+      this.data,
+      this.files,
+      this.changesError,
+      this.baseSha,
+      this.targetSha,
+      this.targetDir,
+      [...this.blobs],
+      [...this.positions],
+    ]);
+    if (snapshot === this.snapshot) return;
+    this.snapshot = snapshot;
     this.changed.fire({ external: true });
   }
 
@@ -277,6 +291,7 @@ export class Review implements vscode.Disposable {
         for (const f of files) delete all[f.path];
       }
       await this.state.update(this.viewedKey, all);
+      this.snapshot = undefined;
       this.changed.fire({ external: false });
     });
   }
@@ -352,6 +367,7 @@ export class Review implements vscode.Disposable {
       await fs.writeFile(this.filePath, serializeReview(data));
       this.data = data;
       await this.reanchor();
+      this.snapshot = undefined;
       this.changed.fire({ external: false });
     });
   }
@@ -371,7 +387,12 @@ export class Review implements vscode.Disposable {
 
   private watch(dir: string): vscode.FileSystemWatcher {
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '**/*'));
-    const schedule = () => this.scheduleRefresh();
+    // Git writes to .git all the time (index, objects, logs); only refs and worktrees affect the review.
+    const schedule = (uri: vscode.Uri) => {
+      const rel = path.relative(dir, uri.fsPath).split(path.sep).join('/');
+      if (rel.startsWith('.git/') && !/^\.git\/(HEAD$|packed-refs$|refs\/|worktrees\/[^/]+(\/HEAD)?$)/.test(rel)) return;
+      this.scheduleRefresh();
+    };
     watcher.onDidChange(schedule);
     watcher.onDidCreate(schedule);
     watcher.onDidDelete(schedule);
