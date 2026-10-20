@@ -87,6 +87,7 @@ export class Review implements vscode.Disposable {
   private positions = new Map<string, Position>();
   private sources = new Map<string, string[] | undefined>();
   private blobs = new Map<string, string>();
+  private pendingViewed = new Map<string, boolean>();
   private snapshot?: string;
   files: ChangedFile[] = [];
   changesError?: string;
@@ -272,25 +273,35 @@ export class Review implements vscode.Disposable {
   }
 
   viewState(file: ChangedFile): ViewState {
+    const pending = this.pendingViewed.get(file.path);
+    if (pending !== undefined) return pending ? 'viewed' : 'unviewed';
     const seen = this.viewed()[file.path];
     if (!seen) return 'unviewed';
     return this.blobs.get(file.path) === seen ? 'viewed' : 'updated';
   }
 
   setViewed(files: ChangedFile[], viewed: boolean): Promise<void> {
+    // Show the new state right away, so a refresh that finishes first does not briefly undo the checkbox.
+    for (const f of files) this.pendingViewed.set(f.path, viewed);
     return this.enqueue(async () => {
-      const all = { ...this.viewed() };
-      if (viewed) {
-        const blobs = await this.blobsOf(files, true);
-        files.forEach((f, i) => {
-          if (!blobs[i]) return;
-          all[f.path] = blobs[i];
-          this.blobs.set(f.path, blobs[i]);
-        });
-      } else {
-        for (const f of files) delete all[f.path];
+      try {
+        const all = { ...this.viewed() };
+        if (viewed) {
+          const blobs = await this.blobsOf(files, true);
+          files.forEach((f, i) => {
+            if (!blobs[i]) return;
+            all[f.path] = blobs[i];
+            this.blobs.set(f.path, blobs[i]);
+          });
+        } else {
+          for (const f of files) delete all[f.path];
+        }
+        await this.state.update(this.viewedKey, all);
+      } finally {
+        for (const f of files) {
+          if (this.pendingViewed.get(f.path) === viewed) this.pendingViewed.delete(f.path);
+        }
       }
-      await this.state.update(this.viewedKey, all);
       this.snapshot = undefined;
       this.changed.fire({ external: false });
     });
