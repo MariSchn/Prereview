@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { Comment, REVIEWER, STATUS_LABELS, authorName, threadStatus } from './model';
-import { Review } from './review';
+import { Review, SCHEME } from './review';
 
 export interface AuthorIcons {
   reviewer: vscode.Uri;
@@ -55,15 +55,32 @@ export class CommentsController implements vscode.Disposable {
         this.icons = authorIcons(media);
         this.render();
       }),
-      vscode.window.onDidChangeVisibleTextEditors(() => this.decorateThreads()),
+      vscode.window.onDidChangeVisibleTextEditors(() => {
+        this.decorateThreads();
+        this.updateCommentingRanges();
+      }),
       vscode.window.onDidChangeTextEditorSelection((e) => this.decorateSelection(e.textEditor)),
     ];
+    this.updateCommentingRanges();
+  }
+
+  // Setting the provider again makes VS Code ask for the ranges anew.
+  private updateCommentingRanges(): void {
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (doc) =>
-        this.review?.locationOf(doc.uri)
+        this.inReviewDiff(doc.uri)
           ? { enableFileComments: true, ranges: [new vscode.Range(0, 0, Math.max(doc.lineCount - 1, 0), 0)] }
           : undefined,
     };
+  }
+
+  // Offer comments on a changed file only while its review diff is visible, not when it is opened on its own.
+  private inReviewDiff(uri: vscode.Uri): boolean {
+    const location = this.review?.locationOf(uri);
+    if (!location || uri.scheme === SCHEME) return !!location;
+    return vscode.window.visibleTextEditors.some(
+      (e) => e.document.uri.scheme === SCHEME && this.review!.locationOf(e.document.uri)?.file === location.file,
+    );
   }
 
   setReview(review: Review | undefined): void {
@@ -71,6 +88,7 @@ export class CommentsController implements vscode.Disposable {
     this.threads.clear();
     this.editing = undefined;
     this.review = review;
+    this.updateCommentingRanges();
     this.render();
     if (!review) this.decorateThreads();
     for (const editor of vscode.window.visibleTextEditors) this.decorateSelection(editor);
