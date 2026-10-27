@@ -228,7 +228,8 @@ export class Controller implements vscode.Disposable {
   // The active review, or the given one, as Markdown, with the lines its threads are on now
   private markdown(entry?: ReviewEntry): string | undefined {
     const review = entry && entry.filePath !== this.review?.filePath ? undefined : this.review;
-    const data = review?.data ?? entry?.data;
+    // A file that can't be read has no comments to copy, unless it is the active review, which keeps the last ones read
+    const data = review?.data ?? (entry?.error ? undefined : entry?.data);
     if (!data) return undefined;
     return reviewMarkdown(data, (t) => {
       const pos = review?.position(t) ?? (t.startLine === undefined ? undefined : { start: t.startLine, end: t.endLine ?? t.startLine });
@@ -300,7 +301,10 @@ export class Controller implements vscode.Disposable {
       }),
       command('prereview.copyReviewMarkdown', async (entry?: ReviewEntry) => {
         const text = this.markdown(entry);
-        if (!text) return;
+        if (!text) {
+          if (entry?.error) vscode.window.showErrorMessage(`Prereview: ${path.basename(entry.filePath)} ${describeFileError(entry.error)}, so its comments can't be copied.`);
+          return;
+        }
         await vscode.env.clipboard.writeText(text);
         vscode.window.showInformationMessage('Review copied as Markdown.');
       }),
@@ -348,12 +352,12 @@ export class Controller implements vscode.Disposable {
         const filePath = entry?.filePath ?? this.review?.filePath;
         if (!filePath) return;
         const title = entry ? entryLabel(entry) : this.review!.title;
-        const copy = 'Copy as Markdown and Finish';
+        const copy = this.markdown(entry) ? 'Copy as Markdown and Finish' : undefined;
         const choice = await vscode.window.showWarningMessage(
           `Finish the review of ${title}?`,
-          { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments. To keep them, copy them as Markdown first.` },
+          { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments.${copy ? ' To keep them, copy them as Markdown first.' : ''}` },
           'Finish Review',
-          copy,
+          ...(copy ? [copy] : []),
         );
         if (!choice) return;
         if (choice === copy) await vscode.env.clipboard.writeText(this.markdown(entry) ?? '');

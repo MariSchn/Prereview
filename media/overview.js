@@ -79,9 +79,14 @@
     setTimeout(() => (live.textContent = text), 100);
   }
 
-  // Moves the keyboard focus to a control after the next update, for example after the thread it was in moved away
-  function focusNext(key, reveal = true) {
-    focusTarget = { key, reveal, until: Date.now() + 5000 };
+  // Moves the keyboard focus to a control once the page shows the result of what the user did, for example after the
+  // thread it was in moved away, unless they moved the focus elsewhere first
+  function focusNext(key, reveal = true, done = () => true) {
+    focusTarget = { key, reveal, done, from: document.activeElement };
+  }
+
+  function threadOf(id) {
+    return state.threads.find((t) => t.id === id);
   }
 
   const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, form, input, button, textarea, select';
@@ -350,13 +355,15 @@
     return el;
   }
 
-  // Puts children in order, moving only the ones that are out of place
+  // Puts children in order, moving only the ones that are out of place, as a node that moves loses its focus and the
+  // scroll positions inside it. Removing the old children first keeps the ones after them where they are.
   function place(parent, children) {
     children = children.filter(Boolean);
+    const keep = new Set(children);
+    for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
     children.forEach((child, i) => {
       if (parent.childNodes[i] !== child) parent.insertBefore(child, parent.childNodes[i] ?? null);
     });
-    while (parent.childNodes.length > children.length) parent.lastChild.remove();
     return parent;
   }
 
@@ -417,15 +424,17 @@
       }
     }
     updateFileStops();
-    const wanted = focusTarget && focusTarget.until > Date.now() ? focusTarget : null;
-    const target = wanted ? app.querySelector(`[data-key="${CSS.escape(wanted.key)}"]`) : null;
+    const from = focusTarget?.from;
+    const moved = focusTarget && active !== from && !(active?.dataset?.key && active.dataset.key === from?.dataset?.key);
+    const wanted = focusTarget && !moved && focusTarget.done() ? focusTarget : null;
+    if (moved || wanted) focusTarget = null;
+    const target = wanted && app.querySelector(`[data-key="${CSS.escape(wanted.key)}"]`);
     if (target && target !== document.activeElement) {
-      focusTarget = null;
       target.focus({ preventScroll: true });
       if (wanted.reveal) target.scrollIntoView({ block: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
-    } else if (focused && !focused.isConnected) {
-      // The control that had the focus was rebuilt: focus its new copy, without scrolling the page to it
-      const copy = app.querySelector(`[data-key="${CSS.escape(focused.dataset.key)}"]`);
+    } else if (focused && document.activeElement !== focused) {
+      // The control that had the focus was moved or rebuilt: focus it or its new copy, without scrolling the page to it
+      const copy = focused.isConnected ? focused : app.querySelector(`[data-key="${CSS.escape(focused.dataset.key)}"]`);
       copy?.focus({ preventScroll: true });
       if (copy && typing) copy.setSelectionRange(typing.start, typing.end);
     }
@@ -499,7 +508,10 @@
         el.style.minWidth = `${el.offsetWidth}px`;
         el.replaceChildren(icon('check'), 'Copied');
         clearTimeout(reset);
-        reset = setTimeout(() => el.replaceChildren(icon('copy'), 'Copy path for agent'), 1600);
+        reset = setTimeout(() => {
+          el.style.minWidth = '';
+          el.replaceChildren(icon('copy'), 'Copy path for agent');
+        }, 1600);
       },
       'copy',
       key,
@@ -861,11 +873,11 @@
   }
 
   // After a thread leaves the place it was in, the focus goes to the thread after it
-  function focusAfter(t) {
+  function focusAfter(t, done) {
     const shown = [...app.querySelectorAll('.thread')].filter((card) => card.offsetParent !== null).map((card) => card.dataset.id);
     const i = shown.indexOf(t.id);
-    const next = state.threads.find((x) => x.id === (shown[i + 1] ?? shown[i - 1]));
-    focusNext(next ? leadKey(next) : 'new');
+    const next = threadOf(shown[i + 1] ?? shown[i - 1]);
+    focusNext(next ? leadKey(next) : 'new', true, done);
   }
 
   function thread(t) {
@@ -901,8 +913,9 @@
             resolved ? 'Reopen' : 'Resolve',
             'ghost',
             () => {
-              if (resolved) focusNext(`resolve:${t.id}`);
-              else focusAfter(t);
+              const done = () => (threadOf(t.id)?.status === 'resolved') !== resolved;
+              if (resolved) focusNext(`resolve:${t.id}`, true, done);
+              else focusAfter(t, done);
               post({ type: 'resolve', id: t.id, resolved: !resolved });
             },
             resolved ? 'reopen' : 'check',
@@ -981,11 +994,13 @@
                   'trash',
                   'Delete',
                   () => {
-                    if (t.comments.length === 1) focusAfter(t);
-                    else focusNext(`reply:${t.id}`, false);
+                    const done = () => !threadOf(t.id)?.comments.some((x) => x.id === c.id);
+                    if (t.comments.length === 1) focusAfter(t, done);
+                    else focusNext(`reply:${t.id}`, false, done);
                     post({ type: 'delete', id: t.id, commentId: c.id });
                   },
                   'danger',
+                  `delete:${t.id}:${c.id}`,
                 ),
               ),
         ),
@@ -1030,8 +1045,9 @@
     const send = (resolve) => {
       const body = area.value.trim();
       if (!body) return;
-      if (resolve) focusAfter(t);
-      else focusNext(`reply:${t.id}`, false);
+      const done = () => threadOf(t.id)?.comments.length !== t.comments.length;
+      if (resolve) focusAfter(t, done);
+      else focusNext(`reply:${t.id}`, false, done);
       post({ type: 'reply', id: t.id, body, resolve });
       area.value = '';
       area.dispatchEvent(new Event('input'));
@@ -1042,7 +1058,7 @@
         send(canResolve && event.shiftKey);
       }
     });
-    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check') : null;
+    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check', `reply-resolve:${t.id}`) : null;
     resolveButton?.setAttribute('title', `${MAC ? '⇧⌘' : 'Ctrl+Shift+'}Enter`);
     return h(
       'div',

@@ -776,6 +776,7 @@ button {
 
 /* Buttons that look like links or text, such as file names and thread locations; their own classes style them */
 button:where(.plain) {
+  flex: 0 1 auto;
   gap: normal;
   height: auto;
   padding: 0;

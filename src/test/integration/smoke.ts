@@ -6,6 +6,10 @@ import { Controller } from '../../controller';
 import { Review, createReview } from '../../review';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Waits up to five seconds for VS Code to catch up, which can take a while on CI machines
+async function until(condition: () => boolean): Promise<void> {
+  for (const end = Date.now() + 5000; !condition() && Date.now() < end; ) await sleep(50);
+}
 const root = () => vscode.workspace.workspaceFolders![0].uri.fsPath;
 let controller: Controller;
 let review: Review;
@@ -34,7 +38,7 @@ const tests: [string, () => Promise<void>][] = [
     'opens the diff of a changed file',
     async () => {
       await vscode.commands.executeCommand('prereview.openDiff', review.files[0]);
-      await sleep(300);
+      await until(() => vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputTextDiff);
       const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
       assert.ok(tab?.input instanceof vscode.TabInputTextDiff, 'the active tab is a diff');
       assert.strictEqual((tab.input as vscode.TabInputTextDiff).modified.fsPath, path.join(root(), 'a.ts'));
@@ -55,7 +59,7 @@ const tests: [string, () => Promise<void>][] = [
       const edit = new vscode.WorkspaceEdit();
       edit.insert(doc.uri, new vscode.Position(0, 0), 'zero\nhalf\n');
       assert.ok(await vscode.workspace.applyEdit(edit));
-      await sleep(600);
+      await until(() => review.position(review.data.threads[0])?.start === 5);
       assert.deepStrictEqual(review.position(review.data.threads[0]), { start: 5, end: 5, outdated: false });
       await vscode.commands.executeCommand('workbench.action.files.revert');
     },
@@ -64,9 +68,9 @@ const tests: [string, () => Promise<void>][] = [
     'opens the overview',
     async () => {
       await vscode.commands.executeCommand('prereview.openOverview');
-      await sleep(300);
-      const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs);
-      assert.ok(tabs.some((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith('prereview.overview')));
+      const open = () => vscode.window.tabGroups.all.some((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith('prereview.overview')));
+      await until(open);
+      assert.ok(open(), 'the overview is open');
     },
   ],
 ];

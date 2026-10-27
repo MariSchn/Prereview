@@ -95,7 +95,7 @@ export function reviewMarkdown(data: ReviewData, lines: (thread: Thread) => Span
       const fence = '`'.repeat(Math.max(3, ...(t.snippet.match(/`+/g) ?? []).map((run) => run.length + 1)));
       out.push(`${fence}${path.posix.extname(t.file).slice(1)}`, t.snippet, fence, '');
     }
-    for (const c of t.comments) out.push(`**${authorName(c.author)}:** ${c.body}`, '');
+    for (const c of t.comments) out.push(`**${authorName(c.author)}:**`, '', c.body, '');
   }
   return out.join('\n').trimEnd() + '\n';
 }
