@@ -70,6 +70,7 @@ export class ReviewsView implements vscode.TreeDataProvider<ReviewEntry>, vscode
   active?: string;
 
   setRoot(root: string): void {
+    if (root === this.root) return;
     this.root = root;
     this.watcher?.dispose();
     this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '.prereview/*.json'));

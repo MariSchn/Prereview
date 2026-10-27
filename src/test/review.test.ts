@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import * as fake from './fakeVscode';
 import { git } from '../git';
 import { REVIEWER } from '../model';
-import { Review } from '../review';
+import { Review, contentProvider } from '../review';
 import { listReviews } from '../reviewsView';
 
 // A repository with `base` committed on main and the review folder ignored, as Prereview leaves it
@@ -426,6 +426,31 @@ test('a review opened from a linked worktree notices branches move, though their
   } finally {
     await git(r.root, ['worktree', 'remove', '--force', linked]).catch(() => undefined);
     fs.rmSync(linked, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('a viewed file is unticked when it changes, and the snapshot shows what it was', async () => {
+  const r = await repo({ 'a.ts': lines('one'), 'gone.ts': lines('x') });
+  try {
+    r.write('a.ts', lines('one', 'two'));
+    fs.rmSync(path.join(r.root, 'gone.ts'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    const file = (name: string) => review.files.find((f) => f.path === name)!;
+    assert.deepStrictEqual([review.viewState(file('a.ts')), review.viewState(file('gone.ts'))], ['unviewed', 'unviewed']);
+    await review.setViewed([file('a.ts'), file('gone.ts')], true);
+    assert.deepStrictEqual([review.viewState(file('a.ts')), review.viewState(file('gone.ts'))], ['viewed', 'viewed']);
+    r.write('a.ts', lines('one', 'two', 'three'));
+    await review.refresh();
+    assert.deepStrictEqual([review.viewState(file('a.ts')), review.viewState(file('gone.ts'))], ['updated', 'viewed']);
+    const [snapshot] = review.sinceViewedUris(file('a.ts'))!;
+    assert.strictEqual(await contentProvider.provideTextDocumentContent(snapshot), lines('one', 'two'));
+    await review.setViewed([file('a.ts')], true);
+    assert.strictEqual(review.viewState(file('a.ts')), 'viewed');
+    await review.setViewed([file('a.ts')], false);
+    assert.deepStrictEqual([review.viewState(file('a.ts')), review.sinceViewedUris(file('a.ts'))], ['unviewed', undefined]);
+    review.dispose();
+  } finally {
     r.cleanup();
   }
 });

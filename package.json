@@ -35,7 +35,9 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onFileSystem:prereview",
+    "onWebviewPanel:prereview.overview"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -74,6 +76,17 @@
     "viewsWelcome": [
       {
         "view": "prereview.reviews",
+        "when": "workbenchState == empty",
+        "contents": "Open a folder in a git repository to review an agent's changes.\n[Open Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "prereview.reviews",
+        "when": "prereview.noRepository",
+        "contents": "This folder isn't in a git repository.\n[Initialize Repository](command:git.init)"
+      },
+      {
+        "view": "prereview.reviews",
+        "when": "workbenchState != empty && !prereview.noRepository",
         "contents": "No reviews yet.\n[Start Review](command:prereview.startReview)"
       },
       {
@@ -165,7 +178,24 @@
       },
       {
         "command": "prereview.openDiff",
-        "title": "Open Diff"
+        "title": "Open Changes"
+      },
+      {
+        "command": "prereview.openFile",
+        "title": "Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "prereview.copyFilePath",
+        "title": "Copy Path"
+      },
+      {
+        "command": "prereview.copyRelativeFilePath",
+        "title": "Copy Relative Path"
+      },
+      {
+        "command": "prereview.revealInExplorer",
+        "title": "Reveal in Explorer View"
       },
       {
         "command": "prereview.createThread",
@@ -238,15 +268,6 @@
         "when": "commentEditorFocused && commentController == prereview",
         "args": {
           "snippet": "`${1:$TM_SELECTED_TEXT}`$0"
-        }
-      },
-      {
-        "command": "editor.action.insertSnippet",
-        "key": "ctrl+k",
-        "mac": "cmd+k",
-        "when": "commentEditorFocused && commentController == prereview",
-        "args": {
-          "snippet": "[${1:$TM_SELECTED_TEXT}](${2:url})$0"
         }
       }
     ],
@@ -330,22 +351,77 @@
           "command": "prereview.openSinceViewed",
           "when": "view == prereview.files && viewItem == file-updated",
           "group": "inline"
+        },
+        {
+          "command": "prereview.openFile",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "inline@0"
+        },
+        {
+          "command": "prereview.openDiff",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "prereview.openFile",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "prereview.openSinceViewed",
+          "when": "view == prereview.files && viewItem == file-updated",
+          "group": "1_open@3"
+        },
+        {
+          "command": "prereview.revealInExplorer",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "2_reveal@1"
+        },
+        {
+          "command": "prereview.copyFilePath",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "6_copypath@1"
+        },
+        {
+          "command": "prereview.copyRelativeFilePath",
+          "when": "view == prereview.files && viewItem =~ /^file/",
+          "group": "6_copypath@2"
+        },
+        {
+          "command": "prereview.switchReview",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "1_open@1"
+        },
+        {
+          "command": "prereview.openReviewFile",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "1_open@2"
+        },
+        {
+          "command": "prereview.copyReviewPath",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "2_copy@1"
+        },
+        {
+          "command": "prereview.finishReview",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "3_finish@1"
         }
       ],
       "editor/title": [
         {
           "command": "prereview.markViewed",
-          "when": "prereview.activeFile == unviewed",
+          "when": "resource in prereview.unviewedDocuments",
           "group": "navigation"
         },
         {
           "command": "prereview.markUnviewed",
-          "when": "prereview.activeFile == viewed",
+          "when": "resource in prereview.viewedDocuments",
           "group": "navigation"
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "prereview.activeFileUpdated",
+          "when": "resource in prereview.updatedDocuments",
           "group": "navigation"
         }
       ],
@@ -403,6 +479,22 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "prereview.revealInExplorer",
+          "when": "false"
+        },
+        {
+          "command": "prereview.copyRelativeFilePath",
+          "when": "false"
+        },
+        {
+          "command": "prereview.copyFilePath",
+          "when": "false"
+        },
+        {
+          "command": "prereview.openFile",
+          "when": "false"
+        },
         {
           "command": "prereview.switchReview",
           "when": "false"
@@ -477,19 +569,31 @@
         },
         {
           "command": "prereview.markViewed",
-          "when": "prereview.activeFile == unviewed"
+          "when": "resource in prereview.unviewedDocuments"
         },
         {
           "command": "prereview.markUnviewed",
-          "when": "prereview.activeFile == viewed"
+          "when": "resource in prereview.viewedDocuments"
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "prereview.activeFileUpdated"
+          "when": "resource in prereview.updatedDocuments"
         },
         {
           "command": "prereview.openAllSinceViewed",
           "when": "prereview.hasUpdated"
+        }
+      ],
+      "commentsView/commentThread/context": [
+        {
+          "command": "prereview.resolve",
+          "group": "inline",
+          "when": "commentController == prereview && commentThread == unresolved"
+        },
+        {
+          "command": "prereview.unresolve",
+          "group": "inline",
+          "when": "commentController == prereview && commentThread == resolved"
         }
       ]
     }
@@ -499,11 +603,13 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test:integration": "npm run compile && node out/test/integration/runTests.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@types/vscode": "~1.99.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
     "typescript": "^7.0.2"
   }

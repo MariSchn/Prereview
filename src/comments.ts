@@ -116,7 +116,8 @@ export class CommentsController implements vscode.Disposable {
       if (!uri) continue;
       seen.add(t.id);
       const pos = review.position(t);
-      const range = pos && new vscode.Range(Math.max(pos.start - 1, 0), 0, Math.max(pos.end - 1, 0), 0);
+      // To the end of the last line: VS Code highlights a thread's range exactly as given
+      const range = pos && new vscode.Range(Math.max(pos.start - 1, 0), 0, Math.max(pos.end - 1, 0), Number.MAX_SAFE_INTEGER);
       const status = threadStatus(t);
       let thread = this.threads.get(t.id);
       if (thread && thread.uri.toString() !== uri.toString()) {

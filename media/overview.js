@@ -222,7 +222,7 @@
     bold: { label: 'Bold', key: 'b', wrap: ['**', '**'] },
     italic: { label: 'Italic', key: 'i', wrap: ['_', '_'] },
     code: { label: 'Code', key: 'e', wrap: ['`', '`'], block: ['```\n', '\n```'] },
-    link: { label: 'Link', key: 'k', wrap: ['[', '](url)'] },
+    link: { label: 'Link', wrap: ['[', '](url)'] },
     quote: { label: 'Quote', prefix: () => '> ' },
     bullets: { label: 'Bulleted list', prefix: () => '- ' },
     numbers: { label: 'Numbered list', prefix: (i) => `${i + 1}. ` },

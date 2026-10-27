@@ -19,11 +19,31 @@ export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
   private roots: TreeNode<ChangedFile>[] = [];
+  private parents = new Map<TreeNode<ChangedFile>, TreeNode<ChangedFile>>();
+  private nodes = new Map<string, FileItem>();
   review?: Review;
 
   refresh(): void {
     this.roots = this.review ? buildTree(this.review.files) : [];
+    this.parents.clear();
+    this.nodes.clear();
+    const index = (nodes: TreeNode<ChangedFile>[], parent?: TreeNode<ChangedFile>) => {
+      for (const node of nodes) {
+        if (parent) this.parents.set(node, parent);
+        if (node.kind === 'file') this.nodes.set(node.file.path, node);
+        else index(node.children, node);
+      }
+    };
+    index(this.roots);
     this.changed.fire();
+  }
+
+  nodeOf(file: string): FileItem | undefined {
+    return this.nodes.get(file);
+  }
+
+  getParent(node: TreeNode<ChangedFile>): TreeNode<ChangedFile> | undefined {
+    return this.parents.get(node);
   }
 
   get orderedFiles(): ChangedFile[] {
