@@ -81,6 +81,25 @@ export function pairLabel(data: ReviewData): string {
   return `${data.base} ↔ ${data.target ?? 'working tree'}`;
 }
 
+// A review as Markdown, to keep after finishing it or paste into a pull request
+export function reviewMarkdown(data: ReviewData, lines: (thread: Thread) => Span | undefined): string {
+  const out = [`# ${data.title || pairLabel(data)}`, ''];
+  if (data.title) out.push(pairLabel(data), '');
+  if (data.description) out.push(data.description, '');
+  for (const t of data.threads) {
+    const span = lines(t);
+    const at = span && (span.start === span.end ? `:${span.start}` : `:${span.start}-${span.end}`);
+    const where = t.file ? `\`${t.file}${at ?? ''}\`${t.side === 'base' ? ' (old version)' : ''}` : 'General comment';
+    out.push(`## ${where} · ${STATUS_LABELS[threadStatus(t)]}`, '');
+    if (t.snippet !== undefined && t.file) {
+      const fence = '`'.repeat(Math.max(3, ...(t.snippet.match(/`+/g) ?? []).map((run) => run.length + 1)));
+      out.push(`${fence}${path.posix.extname(t.file).slice(1)}`, t.snippet, fence, '');
+    }
+    for (const c of t.comments) out.push(`**${authorName(c.author)}:** ${c.body}`, '');
+  }
+  return out.join('\n').trimEnd() + '\n';
+}
+
 export function reviewFileName(base: string, target: string | null): string {
   const slug = (s: string) => s.replace(/[^\w.-]+/g, '-');
   return `${slug(base)}...${slug(target ?? 'worktree')}.json`;

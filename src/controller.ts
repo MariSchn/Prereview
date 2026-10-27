@@ -6,7 +6,7 @@ import { CommentsController, ReviewComment } from './comments';
 import { TreeNode, flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
-import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel } from './model';
+import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel, reviewMarkdown } from './model';
 import { Overview, VIEW_TYPE, confirmDelete } from './overview';
 import { Review, ReviewChange, SCHEME, contentProvider, createReview, deleteReview } from './review';
 import { ReviewEntry, ReviewsView, countsLabel, entryLabel, listReviews } from './reviewsView';
@@ -225,6 +225,17 @@ export class Controller implements vscode.Disposable {
     if (node && this.tree.visible) void Promise.resolve(this.tree.reveal(node, { select: true, focus: false })).catch(() => undefined);
   }
 
+  // The active review, or the given one, as Markdown, with the lines its threads are on now
+  private markdown(entry?: ReviewEntry): string | undefined {
+    const review = entry && entry.filePath !== this.review?.filePath ? undefined : this.review;
+    const data = review?.data ?? entry?.data;
+    if (!data) return undefined;
+    return reviewMarkdown(data, (t) => {
+      const pos = review?.position(t) ?? (t.startLine === undefined ? undefined : { start: t.startLine, end: t.endLine ?? t.startLine });
+      return pos && { start: pos.start, end: pos.end };
+    });
+  }
+
   private fileAt(uri?: vscode.Uri): ChangedFile | undefined {
     return uri ? this.review?.fileOf(uri) : undefined;
   }
@@ -258,9 +269,9 @@ export class Controller implements vscode.Disposable {
         if (await this.open(entry.filePath)) overview.show();
       }),
       command('prereview.openOverview', () => overview.show()),
-      command('prereview.openDiff', (arg: FileItem | ChangedFile) => {
+      command('prereview.openDiff', (arg: FileItem | ChangedFile, options?: { beside?: boolean }) => {
         const file = this.fileArg(arg);
-        if (this.review && file) return openDiff(this.review, file);
+        if (this.review && file) return openDiff(this.review, file, undefined, options?.beside);
       }),
       command('prereview.openFile', (arg?: FileItem | ChangedFile) => {
         const file = this.fileArg(arg);
@@ -281,10 +292,17 @@ export class Controller implements vscode.Disposable {
           return vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(path.join(this.review.targetDir ?? this.review.root, file.path)));
         }
       }),
-      command('prereview.openSinceViewed', (arg: FileItem | ChangedFile) => {
+      command('prereview.openSinceViewed', (arg: FileItem | ChangedFile, options?: { beside?: boolean }) => {
         const file = this.fileArg(arg);
         const uris = file && this.review?.sinceViewedUris(file);
-        if (file && uris) return vscode.commands.executeCommand('vscode.diff', ...uris, `${path.posix.basename(file.path)} (since viewed)`);
+        const title = file && `${path.posix.basename(file.path)} (since viewed)`;
+        if (uris) return vscode.commands.executeCommand('vscode.diff', ...uris, title, { viewColumn: options?.beside ? vscode.ViewColumn.Beside : undefined });
+      }),
+      command('prereview.copyReviewMarkdown', async (entry?: ReviewEntry) => {
+        const text = this.markdown(entry);
+        if (!text) return;
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.showInformationMessage('Review copied as Markdown.');
       }),
       command('prereview.openAllSinceViewed', () => {
         const review = this.review;
@@ -330,12 +348,15 @@ export class Controller implements vscode.Disposable {
         const filePath = entry?.filePath ?? this.review?.filePath;
         if (!filePath) return;
         const title = entry ? entryLabel(entry) : this.review!.title;
+        const copy = 'Copy as Markdown and Finish';
         const choice = await vscode.window.showWarningMessage(
           `Finish the review of ${title}?`,
-          { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments.` },
+          { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments. To keep them, copy them as Markdown first.` },
           'Finish Review',
+          copy,
         );
-        if (choice !== 'Finish Review') return;
+        if (!choice) return;
+        if (choice === copy) await vscode.env.clipboard.writeText(this.markdown(entry) ?? '');
         if (filePath === this.review?.filePath) this.setReview(undefined);
         await deleteReview(filePath, this.context.workspaceState);
         await this.reviews.refresh();
@@ -363,12 +384,15 @@ function statusText(counts: Record<ThreadStatus, number>): string {
   return '$(comment-discussion) Review';
 }
 
-function openDiff(review: Review, file: ChangedFile, selection?: vscode.Range) {
+// From the overview, diffs open beside it, so it stays in view as a list of what to look at
+function openDiff(review: Review, file: ChangedFile, selection?: vscode.Range, beside = false) {
   const [left, right] = review.diffUris(file);
   const title = `${path.posix.basename(file.path)} (${review.title})`;
-  return vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true, selection });
+  const viewColumn = beside ? vscode.ViewColumn.Beside : undefined;
+  return vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true, selection, viewColumn });
 }
 
+// Threads are only opened from the overview
 async function openThread(review: Review, thread: Thread): Promise<void> {
   const uri = review.threadUri(thread);
   if (!uri || !thread.file) return;
@@ -376,10 +400,10 @@ async function openThread(review: Review, thread: Thread): Promise<void> {
   const range = pos && new vscode.Range(pos.start - 1, 0, pos.end - 1, 0);
   const file = review.files.find((f) => f.path === thread.file);
   if (!file) {
-    await vscode.window.showTextDocument(uri, { selection: range });
+    await vscode.window.showTextDocument(uri, { selection: range, viewColumn: vscode.ViewColumn.Beside });
     return;
   }
-  await openDiff(review, file, thread.side === 'base' ? undefined : range);
+  await openDiff(review, file, thread.side === 'base' ? undefined : range, true);
   if (thread.side === 'base' && range) {
     const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString());
     editor?.revealRange(range, vscode.TextEditorRevealType.InCenter);

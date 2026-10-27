@@ -12,6 +12,7 @@ import {
   parseReview,
   readPair,
   reviewFileName,
+  reviewMarkdown,
   reviewFilePath,
   serializeReview,
   threadStatus,
@@ -253,4 +254,45 @@ test('follow finds code that moved elsewhere in the file', () => {
   const before = ['a();', 'function x() {', '  return 1;', '}', 'b();'];
   const after = ['a();', 'b();', '', 'function x() {', '  return 1;', '}'];
   assert.deepStrictEqual(follow(before, after, { start: 3, end: 3 }, ['  return 1;']), { start: 5, end: 5, lost: false });
+});
+
+test('reviewMarkdown writes a review out with the lines its threads are on', () => {
+  const data = parseReview(
+    JSON.stringify({
+      title: 'Add caching',
+      description: 'Caches results.',
+      base: 'main',
+      target: 'feat',
+      threads: [
+        { id: 'a', file: 'src/a.ts', startLine: 3, endLine: 4, snippet: 'x()\ny()', resolved: true, comments: [{ author: REVIEWER, body: 'Why?' }, { author: 'agent', body: 'Faster.' }] },
+        { id: 'b', comments: [{ author: REVIEWER, body: 'Add tests.' }] },
+      ],
+    }),
+  );
+  assert.strictEqual(
+    reviewMarkdown(data, (t) => (t.id === 'a' ? { start: 5, end: 6 } : undefined)),
+    [
+      '# Add caching',
+      '',
+      'main ↔ feat',
+      '',
+      'Caches results.',
+      '',
+      '## `src/a.ts:5-6` · Resolved',
+      '',
+      '```ts',
+      'x()',
+      'y()',
+      '```',
+      '',
+      '**You:** Why?',
+      '',
+      '**Agent:** Faster.',
+      '',
+      '## General comment · Awaiting agent',
+      '',
+      '**You:** Add tests.',
+      '',
+    ].join('\n'),
+  );
 });

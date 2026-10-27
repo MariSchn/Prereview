@@ -135,6 +135,12 @@
         "icon": "$(copy)"
       },
       {
+        "command": "prereview.copyReviewMarkdown",
+        "title": "Copy Review as Markdown",
+        "category": "Prereview",
+        "icon": "$(markdown)"
+      },
+      {
         "command": "prereview.openReviewFile",
         "title": "Open Review File",
         "category": "Prereview",
@@ -333,6 +339,11 @@
         {
           "command": "prereview.finishReview",
           "when": "view == prereview.files && prereview.active",
+          "group": "1_review@4"
+        },
+        {
+          "command": "prereview.copyReviewMarkdown",
+          "when": "view == prereview.files && prereview.active",
           "group": "1_review@3"
         }
       ],
@@ -406,6 +417,11 @@
           "command": "prereview.finishReview",
           "when": "view == prereview.reviews && viewItem == review",
           "group": "3_finish@1"
+        },
+        {
+          "command": "prereview.copyReviewMarkdown",
+          "when": "view == prereview.reviews && viewItem == review",
+          "group": "2_copy@2"
         }
       ],
       "editor/title": [
@@ -582,6 +598,10 @@
         {
           "command": "prereview.openAllSinceViewed",
           "when": "prereview.hasUpdated"
+        },
+        {
+          "command": "prereview.copyReviewMarkdown",
+          "when": "prereview.active"
         }
       ]
     }
