@@ -6,10 +6,10 @@ import { CommentsController, ReviewComment } from './comments';
 import { flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
-import { Thread, ThreadStatus, countStatuses, pairLabel } from './model';
+import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel } from './model';
 import { Overview, confirmDelete } from './overview';
 import { Review, ReviewChange, SCHEME, contentProvider, deleteReview } from './review';
-import { ReviewEntry, ReviewsView, countsLabel, listReviews } from './reviewsView';
+import { ReviewEntry, ReviewsView, countsLabel, entryLabel, listReviews } from './reviewsView';
 
 const ACTIVE_KEY = 'prereview.activeReview';
 
@@ -26,10 +26,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let listener: vscode.Disposable | undefined;
   let counts = countStatuses([]);
 
-  const fileAt = (uri?: vscode.Uri): ChangedFile | undefined => {
-    const location = uri && review?.locationOf(uri);
-    return location ? review?.files.find((f) => f.path === location.file) : undefined;
-  };
+  const fileAt = (uri?: vscode.Uri): ChangedFile | undefined => (uri ? review?.fileOf(uri) : undefined);
   const activeFile = () => fileAt(vscode.window.activeTextEditor?.document.uri);
 
   const updateEditorContext = () => {
@@ -48,13 +45,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const viewed = review.files.filter((f) => review!.viewState(f) === 'viewed').length;
       const updated = review.files.filter((f) => review!.viewState(f) === 'updated').length;
       tree.description = review.title;
-      tree.message = review.changesError
-        ? review.changesError
-        : review.files.length
-          ? `${viewed} of ${review.files.length} files viewed${updated ? ` · ${updated} changed since viewed` : ''}`
-          : undefined;
-      statusItem.text = statusText(next);
-      statusItem.tooltip = `Prereview: ${review.title}`;
+      tree.message = review.fileError
+        ? `The review file ${describeFileError(review.fileError)}. Comments can't be saved until it is fixed.`
+        : review.changesError
+          ? review.changesError
+          : review.files.length
+            ? `${viewed} of ${review.files.length} files viewed${updated ? ` · ${updated} changed since viewed` : ''}`
+            : undefined;
+      statusItem.text = review.fileError ? '$(warning) Review file has an error' : statusText(next);
+      statusItem.tooltip = review.fileError
+        ? `Prereview: ${path.basename(review.filePath)} ${describeFileError(review.fileError)}`
+        : `Prereview: ${review.title}`;
       statusItem.show();
       if (change.external && counts.awaitingAgent > 0 && next.awaitingAgent === 0 && next.awaitingYou > 0 && !overview.visible) {
         vscode.window.showInformationMessage('The agent replied to all open threads.', 'Open Overview').then((choice) => {
@@ -185,14 +186,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     command('prereview.copyReviewPath', async (entry?: ReviewEntry) => {
       const filePath = entry?.filePath ?? review?.filePath;
       if (!filePath) return;
+      if (filePath === review?.filePath) await review.syncLines();
       await vscode.env.clipboard.writeText(filePath);
       vscode.window.showInformationMessage('Review path copied. Send it to your agent.');
+    }),
+    command('prereview.openReviewFile', async (entry?: { filePath: string; error?: FileError }) => {
+      const filePath = entry?.filePath ?? review?.filePath;
+      if (!filePath) return;
+      const error = entry ? entry.error : review?.fileError;
+      const at = error?.line === undefined ? undefined : new vscode.Position(error.line - 1, (error.column ?? 1) - 1);
+      await vscode.window.showTextDocument(vscode.Uri.file(filePath), { selection: at && new vscode.Range(at, at) });
     }),
     command('prereview.refresh', () => review?.refresh()),
     command('prereview.finishReview', async (entry?: ReviewEntry) => {
       const filePath = entry?.filePath ?? review?.filePath;
       if (!filePath) return;
-      const title = entry ? pairLabel(entry.data) : review!.title;
+      const title = entry ? entryLabel(entry) : review!.title;
       const choice = await vscode.window.showWarningMessage(
         `Finish the review of ${title}?`,
         { modal: true, detail: `This deletes ${path.basename(filePath)} and all its comments.` },
@@ -229,8 +238,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (saved) {
     try {
       setReview(await Review.load(saved, context.workspaceState));
-    } catch {
-      context.workspaceState.update(ACTIVE_KEY, undefined);
+    } catch (e) {
+      // A file that can't be read is still listed under Reviews, to fix or finish it there
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') context.workspaceState.update(ACTIVE_KEY, undefined);
+      else vscode.window.showWarningMessage(`Prereview: ${(e as Error).message}`);
     }
   }
 }
@@ -270,9 +281,9 @@ async function pickReview(state: vscode.Memento): Promise<Review | undefined> {
   if (!folder) throw new Error('Open a folder inside a git repository first.');
   const root = await repoRoot(folder.uri.fsPath);
   const existing = (await listReviews(root)).map((e) => ({
-    label: e.data.title || pairLabel(e.data),
+    label: e.error ? `$(warning) ${entryLabel(e)}` : e.data.title || pairLabel(e.data),
     description: e.data.title ? pairLabel(e.data) : undefined,
-    detail: countsLabel(e.counts),
+    detail: e.error ? `${path.basename(e.filePath)} ${describeFileError(e.error)}` : countsLabel(e.counts),
     filePath: e.filePath,
   }));
   if (existing.length) {

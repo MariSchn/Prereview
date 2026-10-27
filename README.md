@@ -75,8 +75,8 @@ Each review is a JSON file in `.prereview/` at the repository root. The folder i
       "snippet": "this.discounts.push(discount);",
       "resolved": false,
       "comments": [
-        { "author": "reviewer", "body": "Should codes stack?", "createdAt": "2026-10-18T12:00:00.000Z" },
-        { "author": "agent", "body": "No. A cart now holds a single code." }
+        { "id": "8d1e07aa", "author": "reviewer", "body": "Should codes stack?", "createdAt": "2026-10-18T12:00:00.000Z" },
+        { "id": "c40b2f19", "author": "agent", "body": "No. A cart now holds a single code." }
       ]
     }
   ]
@@ -85,7 +85,11 @@ Each review is a JSON file in `.prereview/` at the repository root. The folder i
 
 `target` is `null` for a working tree review. A thread with no line numbers is about the whole file, a thread with no `file` is a general comment, and `"side": "base"` puts the thread on the old version of the file. `file` is relative to the repository root and uses forward slashes.
 
-The `agentInstructions` field, written into every file, tells the agent to fill in the title and description, reply to open threads, and leave the rest alone. Threads follow their code when lines move. If the commented lines themselves change, the thread is marked **Outdated**.
+The `agentInstructions` field, written into every file, tells the agent to fill in the title and description, reply to open threads, and leave the rest alone. Prereview gives every comment an `id`, so the agent can leave it out.
+
+Threads follow their code when lines are added or removed around it, also while you edit a file before saving it, and Prereview writes the current lines back to `startLine` and `endLine`. If the commented lines themselves change, or a line like `}` can't be told apart from its copies, the thread is marked **Outdated**.
+
+Prereview keeps whatever it doesn't use, such as extra fields an agent adds. If the file isn't valid JSON, for example while the agent is still writing it, the overview says where the problem is and your changes wait until it is fixed.
 
 ## Privacy
 

@@ -2,10 +2,11 @@ import { randomBytes } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { buildTree, flatten } from './fileTree';
-import { REVIEWER, Thread, ThreadStatus, authorName, threadStatus } from './model';
+import { REVIEWER, Thread, ThreadStatus, authorName, describeFileError, threadStatus } from './model';
 import { Position, Review } from './review';
 
 interface CommentView {
+  id: string;
   author: string;
   mine: boolean;
   time?: string;
@@ -22,6 +23,7 @@ interface ThreadView {
   base: boolean;
   snippet?: { start: number; focus: [number, number]; lines: string[] };
   comments: CommentView[];
+  unreadable?: number;
 }
 
 const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'finishReview', 'refresh'];
@@ -121,16 +123,19 @@ export class Overview implements vscode.Disposable {
         if (body) await review.addThread({}, body);
         return;
       case 'edit':
-        if (body) await review.editComment(message.id, message.index, body);
+        if (body) await review.editComment(message.id, message.commentId, body);
         return;
       case 'delete':
-        if (await confirmDelete()) await review.deleteComment(message.id, message.index);
+        if (await confirmDelete()) await review.deleteComment(message.id, message.commentId);
         return;
       case 'command':
         if (COMMANDS.includes(message.name)) await vscode.commands.executeCommand(`prereview.${message.name}`);
         return;
       case 'copyPath':
+        await review.syncLines();
         return vscode.env.clipboard.writeText(review.filePath);
+      case 'openReviewFile':
+        return vscode.commands.executeCommand('prereview.openReviewFile');
       case 'openFile': {
         const file = review.files.find((f) => f.path === message.path);
         if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
@@ -182,6 +187,7 @@ export class Overview implements vscode.Disposable {
         snippet,
         comments: await Promise.all(
           t.comments.map(async (c) => ({
+            id: c.id,
             author: authorName(c.author),
             mine: c.author === REVIEWER,
             time: c.createdAt,
@@ -189,6 +195,7 @@ export class Overview implements vscode.Disposable {
             body: c.author === REVIEWER ? c.body : undefined,
           })),
         ),
+        unreadable: t.unreadable,
       });
     }
     const { data } = review;
@@ -211,6 +218,8 @@ export class Overview implements vscode.Disposable {
       deleted: review.files.reduce((n, f) => n + (f.deleted ?? 0), 0),
       counts,
       changesError: review.changesError,
+      fileError: review.fileError && `${path.basename(review.filePath)} ${describeFileError(review.fileError)}.`,
+      unreadable: data.unreadable,
       description: data.description ? await this.markdown(data.description) : undefined,
       threads,
     };

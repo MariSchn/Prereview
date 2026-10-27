@@ -26,7 +26,7 @@ code --install-extension prereview-0.1.0.vsix
 npm test
 ```
 
-The unit tests use `node:test` and cover everything that doesn't need VS Code: git commands and their parsing, the review file format and the file tree. Tests that need git create a throwaway repository in the temp folder.
+The unit tests use `node:test`. They cover git commands and their parsing, the review file format, the file tree, and `Review`, which runs against a small stand-in for the `vscode` module (`src/test/fakeVscode.ts`; import `./stubVscode` first in a test that needs it). Tests that need git create a throwaway repository in the temp folder.
 
 ## Layout
 

@@ -2,7 +2,23 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChangedFile, catBlob, changedFiles, hashObjects, mergeBase, revParse, show, worktrees } from './git';
-import { REVIEWER, ReviewData, Thread, locate, newId, parseReview, reviewFilePath, serializeReview } from './model';
+import {
+  FileError,
+  REVIEWER,
+  ReviewData,
+  ReviewDocument,
+  Thread,
+  describeFileError,
+  fileError,
+  follow,
+  locate,
+  matchesAt,
+  newId,
+  parseReview,
+  readPair,
+  reviewFilePath,
+  serializeReview,
+} from './model';
 
 export const SCHEME = 'prereview';
 const DELETED = 'deleted';
@@ -47,9 +63,17 @@ function viewedKey(filePath: string): string {
   return `prereview.viewed:${filePath}`;
 }
 
+function anchorsKey(filePath: string): string {
+  return `prereview.anchors:${filePath}`;
+}
+
+function lastReadKey(filePath: string): string {
+  return `prereview.lastRead:${filePath}`;
+}
+
 export async function deleteReview(filePath: string, state: vscode.Memento): Promise<void> {
   await fs.rm(filePath, { force: true });
-  await state.update(viewedKey(filePath), undefined);
+  for (const key of [viewedKey(filePath), anchorsKey(filePath), lastReadKey(filePath)]) await state.update(key, undefined);
 }
 
 export type Side = 'head' | 'base';
@@ -71,12 +95,21 @@ export interface ReviewChange {
   external: boolean;
 }
 
+interface Source {
+  text: string;
+  lines: string[];
+}
+
 export class Review implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<ReviewChange>();
   readonly onDidChange = this.changed.event;
   private readonly watcher: vscode.FileSystemWatcher;
+  private readonly listeners: vscode.Disposable[];
   private targetWatcher?: vscode.FileSystemWatcher;
   private timer?: NodeJS.Timeout;
+  private editTimer?: NodeJS.Timeout;
+  private hintTimer?: NodeJS.Timeout;
+  private edits = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   private queuedRefresh?: Promise<void>;
   private refreshAgain = false;
@@ -85,12 +118,17 @@ export class Review implements vscode.Disposable {
   private baseSha = '';
   private targetSha?: string;
   private positions = new Map<string, Position>();
-  private sources = new Map<string, string[] | undefined>();
+  private sources = new Map<string, Source | undefined>();
+  // Where each thread was last placed, to start from after a restart
+  private hints: Record<string, [number, number]>;
   private blobs = new Map<string, string>();
   private pendingViewed = new Map<string, boolean>();
   private snapshot?: string;
+  private lastRead?: string;
   files: ChangedFile[] = [];
   changesError?: string;
+  // Set while the review file can't be read; `data` then still holds what was last read from it
+  fileError?: FileError;
   targetDir?: string;
 
   private constructor(
@@ -100,6 +138,13 @@ export class Review implements vscode.Disposable {
     private readonly state: vscode.Memento,
   ) {
     this.watcher = this.watch(root);
+    this.hints = state.get<Record<string, [number, number]>>(anchorsKey(filePath)) ?? {};
+    this.listeners = [
+      vscode.workspace.onDidChangeTextDocument((e) => {
+        if (e.contentChanges.length) this.edited(e.document.uri);
+      }),
+      vscode.workspace.onDidCloseTextDocument((doc) => this.edited(doc.uri)),
+    ];
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
@@ -113,7 +158,17 @@ export class Review implements vscode.Disposable {
   }
 
   static async load(filePath: string, state: vscode.Memento): Promise<Review> {
-    const data = parseReview(await fs.readFile(filePath, 'utf8'));
+    const text = await fs.readFile(filePath, 'utf8');
+    let data: ReviewData;
+    try {
+      data = parseReview(text);
+    } catch (e) {
+      // Open it on what was last read from it, or at least on what it compares, until the file is fixed
+      const pair = readPair(text);
+      const last = state.get<ReviewData>(lastReadKey(filePath));
+      if (!last && !pair) throw new Error(`${path.basename(filePath)} ${describeFileError(fileError(e as Error, text))}.`);
+      data = last ?? { title: '', description: '', base: pair!.base, target: pair!.target, threads: [] };
+    }
     const review = new Review(path.dirname(path.dirname(filePath)), filePath, data, state);
     await review.refresh();
     return review;
@@ -149,11 +204,14 @@ export class Review implements vscode.Disposable {
   private async refreshOnce(): Promise<void> {
     if (this.disposed) return;
     const warnings: string[] = [];
+    let text: string | undefined;
     try {
-      this.data = parseReview(await fs.readFile(this.filePath, 'utf8'));
+      text = await fs.readFile(this.filePath, 'utf8');
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not read ${path.basename(this.filePath)}: ${(e as Error).message}`);
     }
+    if (text !== undefined) this.read(text);
+    const targetDir = this.targetDir;
     try {
       await this.loadChanges();
     } catch (e) {
@@ -161,15 +219,19 @@ export class Review implements vscode.Disposable {
       this.files = [];
       this.changesError = (e as Error).message;
     }
+    // Absolute paths into the target's worktree can only be made relative once it is known
+    if (text !== undefined && this.targetDir !== targetDir) this.read(text);
     if (this.disposed) return;
     for (const warning of warnings) {
       if (!this.warnings.has(warning)) vscode.window.showWarningMessage(`Prereview: ${warning}`);
     }
     this.warnings = new Set(warnings);
     await this.reanchor();
+    this.remember();
     // Unrelated file activity triggers refreshes too; redrawing the views each time makes them flicker.
     const snapshot = JSON.stringify([
       this.data,
+      this.fileError,
       this.files,
       this.changesError,
       this.baseSha,
@@ -186,33 +248,42 @@ export class Review implements vscode.Disposable {
 
   async addThread(location: { file?: string; side?: 'base'; startLine?: number; endLine?: number }, body: string): Promise<void> {
     const { file, side, startLine, endLine } = location;
-    const lines = file && startLine !== undefined ? await this.lines(file, side) : undefined;
-    const snippet = lines?.slice(startLine! - 1, endLine).join('\n');
-    return this.update((data) => data.threads.push({ id: newId(), ...location, snippet, resolved: false, comments: [newComment(body)] }));
+    const text = file && startLine !== undefined ? await this.text(file, side) : undefined;
+    const snippet = text?.split(/\r?\n/).slice(startLine! - 1, endLine).join('\n');
+    return this.update((doc) => doc.addThread({ file, side, startLine, endLine, snippet }, newComment(body)));
   }
 
   reply(id: string, body: string, resolve = false): Promise<void> {
-    return this.updateThread(id, (t) => {
-      t.comments.push(newComment(body));
-      if (resolve) t.resolved = true;
+    return this.update((doc) => {
+      doc.addComment(id, newComment(body));
+      if (resolve) doc.setResolved(id, true);
     });
   }
 
   setResolved(id: string, resolved: boolean): Promise<void> {
-    return this.updateThread(id, (t) => (t.resolved = resolved));
+    return this.update((doc) => doc.setResolved(id, resolved));
   }
 
-  editComment(id: string, index: number, body: string): Promise<void> {
-    return this.updateThread(id, (t) => {
-      if (t.comments[index]) t.comments[index].body = body;
+  editComment(threadId: string, commentId: string, body: string): Promise<void> {
+    if (!body.trim()) return Promise.reject(new Error("A comment can't be empty."));
+    return this.update((doc) => {
+      const comment = doc.data.threads.find((t) => t.id === threadId)?.comments.find((c) => c.id === commentId);
+      if (comment && comment.author !== REVIEWER) throw new Error('Only your own comments can be edited.');
+      doc.editComment(threadId, commentId, body);
     });
   }
 
-  deleteComment(id: string, index: number): Promise<void> {
-    return this.updateThread(id, (t, data) => {
-      t.comments.splice(index, 1);
-      if (!t.comments.length) data.threads.splice(data.threads.indexOf(t), 1);
+  deleteComment(threadId: string, commentId: string): Promise<void> {
+    return this.update((doc) => doc.deleteComment(threadId, commentId));
+  }
+
+  // Writes the lines every thread is on now to the review file, so the agent finds them where they are
+  syncLines(): Promise<void> {
+    const moved = this.data.threads.some((t) => {
+      const pos = this.positions.get(t.id);
+      return pos && t.startLine !== undefined && (pos.start !== t.startLine || pos.end !== t.endLine);
     });
+    return moved && !this.fileError ? this.update(() => undefined) : Promise.resolve();
   }
 
   position(thread: Thread): Position | undefined {
@@ -221,7 +292,7 @@ export class Review implements vscode.Disposable {
   }
 
   source(thread: Thread): string[] | undefined {
-    return thread.file ? this.sources.get(sourceKey(thread.file, thread.side)) : undefined;
+    return thread.file ? this.sources.get(sourceKey(thread.file, thread.side))?.lines : undefined;
   }
 
   headUri(file: string): vscode.Uri {
@@ -250,13 +321,25 @@ export class Review implements vscode.Disposable {
     return [left, this.diffUris(file)[1]];
   }
 
-  locationOf(uri: vscode.Uri): Location | undefined {
+  // The changed file a document belongs to, on either side of any review diff
+  fileOf(uri: vscode.Uri): ChangedFile | undefined {
     if (uri.scheme === SCHEME) {
       const { ref, file } = JSON.parse(uri.query);
-      if (!ref) {
-        const f = this.files.find((f) => f.path === file);
-        return f && { file: f.path, side: f.status === 'D' ? 'base' : 'head' };
-      }
+      if (ref && ref === this.baseSha) return this.files.find((f) => f.oldPath === file && f.status !== 'A');
+      return this.files.find((f) => f.path === file);
+    }
+    if (uri.scheme === 'file' && this.targetDir) {
+      const file = path.relative(this.targetDir, uri.fsPath).split(path.sep).join('/');
+      return this.files.find((f) => f.path === file && f.status !== 'D');
+    }
+    return undefined;
+  }
+
+  // Where a comment left in a document belongs. Only the old and new version of a changed file take comments;
+  // the empty side of an added or deleted file and the snapshot in "since viewed" diffs don't.
+  commentLocation(uri: vscode.Uri): Location | undefined {
+    if (uri.scheme === SCHEME) {
+      const { ref, file } = JSON.parse(uri.query);
       if (ref && ref === this.baseSha) {
         const f = this.files.find((f) => f.oldPath === file && f.status !== 'A');
         return f && { file: f.path, side: 'base' };
@@ -265,12 +348,10 @@ export class Review implements vscode.Disposable {
         const f = this.files.find((f) => f.path === file && f.status !== 'D');
         return f && { file: f.path, side: 'head' };
       }
-    } else if (uri.scheme === 'file' && this.targetDir) {
-      const file = path.relative(this.targetDir, uri.fsPath).split(path.sep).join('/');
-      const f = this.files.find((f) => f.path === file && f.status !== 'D');
-      return f && { file: f.path, side: 'head' };
+      return undefined;
     }
-    return undefined;
+    const f = this.fileOf(uri);
+    return f && { file: f.path, side: 'head' };
   }
 
   viewState(file: ChangedFile): ViewState {
@@ -311,8 +392,14 @@ export class Review implements vscode.Disposable {
   dispose(): void {
     this.disposed = true;
     clearTimeout(this.timer);
+    clearTimeout(this.editTimer);
+    if (this.hintTimer) {
+      clearTimeout(this.hintTimer);
+      this.saveHints();
+    }
     this.watcher.dispose();
     this.targetWatcher?.dispose();
+    for (const listener of this.listeners) listener.dispose();
     this.changed.dispose();
   }
 
@@ -367,28 +454,62 @@ export class Review implements vscode.Disposable {
     this.blobs = blobs;
   }
 
-  private update(fn: (data: ReviewData) => void): Promise<void> {
+  private read(text: string): void {
+    try {
+      this.data = parseReview(text, { roots: this.roots() });
+      this.fileError = undefined;
+    } catch (e) {
+      this.fileError = fileError(e as Error, text);
+    }
+  }
+
+  // Folders an agent's absolute paths may point into, the target's worktree first since it can be inside the repository
+  private roots(): string[] {
+    return this.targetDir && this.targetDir !== this.root ? [this.targetDir, this.root] : [this.root];
+  }
+
+  // Keeps what was last read, to open the review on it while the file can't be read
+  private remember(): void {
+    if (this.fileError) return;
+    const text = JSON.stringify(this.data);
+    if (text === this.lastRead) return;
+    this.lastRead = text;
+    void this.state.update(lastReadKey(this.filePath), this.data);
+  }
+
+  private update(edit: (doc: ReviewDocument) => void): Promise<void> {
     return this.enqueue(async () => {
-      const data = parseReview(await fs.readFile(this.filePath, 'utf8'));
-      fn(data);
-      for (const t of data.threads) {
-        if (!t.file || t.startLine === undefined || t.snippet !== undefined) continue;
-        const lines = this.sources.get(sourceKey(t.file, t.side));
-        if (lines) t.snippet = lines.slice(t.startLine - 1, t.endLine).join('\n');
+      const text = await fs.readFile(this.filePath, 'utf8');
+      let doc: ReviewDocument;
+      try {
+        doc = new ReviewDocument(text, { roots: this.roots() });
+      } catch (e) {
+        this.fileError = fileError(e as Error, text);
+        this.snapshot = undefined;
+        this.changed.fire({ external: false });
+        throw new Error(`${path.basename(this.filePath)} ${describeFileError(this.fileError)}, so the change was not saved.`);
       }
-      await fs.writeFile(this.filePath, serializeReview(data));
-      this.data = data;
-      await this.reanchor();
+      edit(doc);
+      this.keepLines(doc);
+      const next = doc.toString();
+      await fs.writeFile(this.filePath, next);
+      this.read(next);
+      await this.reanchor(new Set());
+      this.remember();
       this.snapshot = undefined;
       this.changed.fire({ external: false });
     });
   }
 
-  private updateThread(id: string, fn: (t: Thread, data: ReviewData) => void): Promise<void> {
-    return this.update((data) => {
-      const t = data.threads.find((t) => t.id === id);
-      if (t) fn(t, data);
-    });
+  // Writes the lines each thread is on now, and the code of threads the agent opened without it
+  private keepLines(doc: ReviewDocument): void {
+    for (const t of doc.data.threads) {
+      if (!t.file || t.startLine === undefined) continue;
+      const pos = this.positions.get(t.id);
+      if (pos && (pos.start !== t.startLine || pos.end !== t.endLine)) doc.setLines(t.id, pos.start, pos.end);
+      const lines = this.sources.get(sourceKey(t.file, t.side))?.lines;
+      if (t.snippet === undefined && lines) doc.setSnippet(t.id, lines.slice((pos?.start ?? t.startLine) - 1, pos?.end ?? t.endLine).join('\n'));
+    }
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -418,35 +539,87 @@ export class Review implements vscode.Disposable {
     this.timer = setTimeout(() => this.refresh(), 300);
   }
 
-  private async reanchor(): Promise<void> {
-    const positions = new Map<string, Position>();
-    const sources = new Map<string, string[] | undefined>();
-    for (const t of this.data.threads) {
-      if (!t.file || t.startLine === undefined) continue;
-      const end = t.endLine ?? t.startLine;
-      const key = sourceKey(t.file, t.side);
-      if (!sources.has(key)) sources.set(key, await this.lines(t.file, t.side));
-      const lines = sources.get(key);
-      const loc = lines && (t.snippet === undefined ? { start: t.startLine, end } : locate(lines, t.snippet, t.startLine));
-      positions.set(t.id, loc ? { ...loc, outdated: false } : { start: t.startLine, end, outdated: true });
-    }
-    this.positions = positions;
-    this.sources = sources;
+  // Threads move with the code while it is edited, before it is saved
+  private edited(uri: vscode.Uri): void {
+    if (this.disposed || uri.scheme !== 'file' || !this.targetDir) return;
+    const key = sourceKey(path.relative(this.targetDir, uri.fsPath).split(path.sep).join('/'));
+    if (!this.sources.has(key)) return;
+    this.edits.add(key);
+    clearTimeout(this.editTimer);
+    this.editTimer = setTimeout(() => {
+      const edits = this.edits;
+      this.edits = new Set();
+      void this.enqueue(async () => {
+        if (this.disposed || !(await this.reanchor(edits))) return;
+        this.snapshot = undefined;
+        this.changed.fire({ external: false });
+      });
+    }, 150);
   }
 
-  private async lines(file: string, side?: 'base'): Promise<string[] | undefined> {
+  // Puts every thread on the lines it is about now, following it from where it was in the file's previous
+  // version. Files in `only` are read again and the others reused; without `only`, all are read.
+  private async reanchor(only?: Set<string>): Promise<boolean> {
+    const sources = new Map<string, Source | undefined>();
+    const positions = new Map<string, Position>();
+    for (const t of this.data.threads) {
+      if (!t.file || t.startLine === undefined) continue;
+      const key = sourceKey(t.file, t.side);
+      if (!sources.has(key)) {
+        const reuse = only && !only.has(key) && this.sources.has(key);
+        sources.set(key, reuse ? this.sources.get(key) : await this.readSource(t.file, t.side));
+      }
+      positions.set(t.id, this.anchor(t, this.sources.get(key), sources.get(key)));
+    }
+    const changed =
+      !samePositions(positions, this.positions) ||
+      sources.size !== this.sources.size ||
+      [...sources].some(([key, source]) => source?.text !== this.sources.get(key)?.text);
+    this.sources = sources;
+    this.positions = positions;
+    if (changed) {
+      clearTimeout(this.hintTimer);
+      this.hintTimer = setTimeout(() => this.saveHints(), 1000);
+    }
+    return changed;
+  }
+
+  private anchor(t: Thread, before: Source | undefined, after: Source | undefined): Position {
+    const known = this.positions.get(t.id);
+    const hint = this.hints[t.id];
+    const stored = hint ? { start: hint[0], end: hint[1] } : { start: t.startLine!, end: t.endLine ?? t.startLine! };
+    if (!after) return { ...(known ?? stored), outdated: true };
+    const snippet = t.snippet?.split('\n');
+    if (known && before) {
+      if (before.text === after.text) return known;
+      const moved = follow(before.lines, after.lines, known, snippet);
+      return { start: moved.start, end: moved.end, outdated: moved.lost || (!!snippet && !matchesAt(after.lines, moved.start, snippet)) };
+    }
+    if (t.snippet === undefined) return { ...stored, outdated: false };
+    const found = locate(after.lines, t.snippet, stored.start);
+    return found ? { start: found.start, end: found.end, outdated: found.ambiguous } : { ...stored, outdated: true };
+  }
+
+  private saveHints(): void {
+    this.hintTimer = undefined;
+    this.hints = Object.fromEntries([...this.positions].map(([id, p]) => [id, [p.start, p.end]]));
+    void this.state.update(anchorsKey(this.filePath), this.hints);
+  }
+
+  private async readSource(file: string, side?: 'base'): Promise<Source | undefined> {
+    const text = await this.text(file, side);
+    return text === undefined ? undefined : { text, lines: text.split(/\r?\n/) };
+  }
+
+  private async text(file: string, side?: 'base'): Promise<string | undefined> {
     try {
-      let text: string;
-      if (side === 'base') {
-        text = await show(this.root, this.baseSha, this.oldPath(file));
-      } else if (this.targetDir) {
+      if (side === 'base') return await show(this.root, this.baseSha, this.oldPath(file));
+      if (this.targetDir) {
         const uri = vscode.Uri.file(path.join(this.targetDir, file));
         const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-        text = doc?.isDirty ? doc.getText() : await fs.readFile(uri.fsPath, 'utf8');
-      } else {
-        text = await show(this.root, this.data.target!, file);
+        return doc?.isDirty ? doc.getText() : await fs.readFile(uri.fsPath, 'utf8');
       }
-      return text.split(/\r?\n/);
+      return await show(this.root, this.data.target!, file);
     } catch {
       return undefined;
     }
@@ -455,13 +628,21 @@ export class Review implements vscode.Disposable {
   private oldPath(file: string): string {
     return this.files.find((f) => f.path === file)?.oldPath ?? file;
   }
-
 }
 
 function sourceKey(file: string, side?: 'base'): string {
   return `${side ?? 'head'}:${file}`;
 }
 
+function samePositions(a: Map<string, Position>, b: Map<string, Position>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, p] of a) {
+    const q = b.get(id);
+    if (!q || q.start !== p.start || q.end !== p.end || q.outdated !== p.outdated) return false;
+  }
+  return true;
+}
+
 function newComment(body: string) {
-  return { author: REVIEWER, body, createdAt: new Date().toISOString() };
+  return { id: newId(), author: REVIEWER, body, createdAt: new Date().toISOString() };
 }

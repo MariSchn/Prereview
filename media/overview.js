@@ -303,7 +303,7 @@
       if (rect.height) before.set(el.dataset.flip, rect.top);
     }
     const animate = primed && !reduceMotion();
-    const content = h('div', { class: 'content' }, changesProblem(), description(), ...groups(), state.files.length ? newComment() : null);
+    const content = h('div', { class: 'content' }, fileProblem(), changesProblem(), description(), ...groups(), state.files.length ? newComment() : null);
     app.replaceChildren(
       topbar(),
       header(),
@@ -606,6 +606,23 @@
     );
   }
 
+  function fileProblem() {
+    if (!state.fileError && !state.unreadable) return null;
+    return h(
+      'div',
+      { class: 'notice', 'data-flip': 'file-error' },
+      h('strong', {}, state.fileError ? "The review file can't be read" : `${plural(state.unreadable, 'thread')} in the review file can't be read`),
+      h(
+        'span',
+        { class: 'muted' },
+        state.fileError
+          ? `${state.fileError} Your comments can't be saved until it is fixed. The agent may still be writing it.`
+          : 'They have no comment text Prereview can read, so they are not shown here. They stay in the file.',
+      ),
+      h('div', { class: 'empty-actions' }, button('Open review file', 'secondary', () => post({ type: 'openReviewFile' }), 'file')),
+    );
+  }
+
   function changesProblem() {
     if (!state.changesError) return null;
     return h(
@@ -738,7 +755,15 @@
       h(
         'div',
         { class: 'comments' },
-        t.comments.map((c, i) => comment(t, c, i)),
+        t.comments.map((c) => comment(t, c)),
+        t.unreadable
+          ? h(
+              'div',
+              { class: 'unreadable' },
+              h('span', { class: 'muted' }, `${plural(t.unreadable, 'comment')} in this thread can't be read.`),
+              button('Open review file', 'ghost', () => post({ type: 'openReviewFile' })),
+            )
+          : null,
       ),
       replyBox(t),
     );
@@ -756,9 +781,9 @@
     );
   }
 
-  function comment(t, c, i) {
-    const isEditing = editing && editing.id === t.id && editing.index === i;
-    const key = `${t.id}:${c.time || i}`;
+  function comment(t, c) {
+    const isEditing = editing && editing.id === t.id && editing.commentId === c.id;
+    const key = `${t.id}:${c.id}`;
     const fresh = primed && !seen.has(key);
     seen.add(key);
     return h(
@@ -781,22 +806,22 @@
                 { class: 'comment-actions' },
                 c.mine
                   ? iconButton('edit', 'Edit', () => {
-                      editing = { id: t.id, index: i };
-                      focusKey = `edit:${t.id}:${i}`;
+                      editing = { id: t.id, commentId: c.id };
+                      focusKey = `edit:${t.id}:${c.id}`;
                       drafts.delete(focusKey);
                       render();
                     })
                   : null,
-                iconButton('trash', 'Delete', () => post({ type: 'delete', id: t.id, index: i }), 'danger'),
+                iconButton('trash', 'Delete', () => post({ type: 'delete', id: t.id, commentId: c.id }), 'danger'),
               ),
         ),
-        isEditing ? editBox(t, c, i) : h('div', { class: 'markdown', html: c.html }),
+        isEditing ? editBox(t, c) : h('div', { class: 'markdown', html: c.html }),
       ),
     );
   }
 
-  function editBox(t, c, i) {
-    const area = textarea(`edit:${t.id}:${i}`, { rows: 4 }, c.body);
+  function editBox(t, c) {
+    const area = textarea(`edit:${t.id}:${c.id}`, { rows: 4 }, c.body);
     const cancel = () => {
       editing = null;
       render();
@@ -804,7 +829,7 @@
     const save = () => {
       const body = area.value.trim();
       if (!body) return;
-      post({ type: 'edit', id: t.id, index: i, body });
+      post({ type: 'edit', id: t.id, commentId: c.id, body });
       editing = null;
     };
     onSubmit(area, save);
