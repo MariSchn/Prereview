@@ -686,6 +686,7 @@ kbd {
   }
 
   .status-card {
+    flex: none;
     grid-template-columns: minmax(0, 1fr);
   }
 
