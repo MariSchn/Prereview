@@ -14,6 +14,7 @@ import {
   locate,
   matchesAt,
   newId,
+  pairLabel,
   parseReview,
   readPair,
   reviewFilePath,
@@ -73,6 +74,17 @@ function anchorsKey(filePath: string): string {
 
 function lastReadKey(filePath: string): string {
   return `prereview.lastRead:${filePath}`;
+}
+
+// Creates the review file for a pair, or finds the one that exists, and returns its path
+export async function createReview(root: string, base: string, target: string | null): Promise<string> {
+  const filePath = await reviewFilePath(root, base, target);
+  try {
+    await fs.access(filePath);
+  } catch {
+    await writeReview(filePath, { title: '', description: '', base, target, threads: [] });
+  }
+  return filePath;
 }
 
 export async function deleteReview(filePath: string, state: vscode.Memento): Promise<void> {
@@ -171,13 +183,7 @@ export class Review implements vscode.Disposable {
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
-    const filePath = await reviewFilePath(root, base, target);
-    try {
-      await fs.access(filePath);
-    } catch {
-      await writeReview(filePath, { title: '', description: '', base, target, threads: [] });
-    }
-    return Review.load(filePath, state);
+    return Review.load(await createReview(root, base, target), state);
   }
 
   static async load(filePath: string, state: vscode.Memento): Promise<Review> {
@@ -202,7 +208,7 @@ export class Review implements vscode.Disposable {
   }
 
   get title(): string {
-    return `${this.data.base} ↔ ${this.targetLabel}`;
+    return pairLabel(this.data);
   }
 
   // Reads everything again, including where the branches point
@@ -364,6 +370,12 @@ export class Review implements vscode.Disposable {
     // Only regular files are stored when viewed; for symlinks and submodules the id is not a blob
     const left = /^[0-9a-f]{40,64}$/.test(seen) ? this.gitUri(file.path, { blob: seen }) : this.gitUri(file.path);
     return [left, this.diffUris(file)[1]];
+  }
+
+  // Every document a review diff can show for a file, as URI strings
+  documentsOf(file: ChangedFile): string[] {
+    const uris = [...this.diffUris(file), ...(this.sinceViewedUris(file) ?? [])];
+    return [...new Set(uris.map((uri) => uri.toString()))];
   }
 
   // The changed file a document belongs to, on either side of any review diff

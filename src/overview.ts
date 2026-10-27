@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { buildTree, flatten } from './fileTree';
-import { REVIEWER, Thread, ThreadStatus, authorName, describeFileError, threadStatus } from './model';
+import { REVIEWER, Thread, ThreadStatus, authorName, countStatuses, describeFileError, threadStatus } from './model';
 import { Position, Review } from './review';
 
 interface CommentView {
@@ -26,6 +26,7 @@ interface ThreadView {
   unreadable?: number;
 }
 
+export const VIEW_TYPE = 'prereview.overview';
 const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
@@ -61,13 +62,27 @@ export class Overview implements vscode.Disposable {
     if (!this.review) return;
     if (this.panel) return this.panel.reveal();
     const media = vscode.Uri.joinPath(this.extensionUri, 'media');
-    this.panel = vscode.window.createWebviewPanel('prereview.overview', 'Review', vscode.ViewColumn.Active, {
-      enableScripts: true,
-      retainContextWhenHidden: true,
-      localResourceRoots: [media],
-    });
-    this.panel.iconPath = this.icon(false);
-    const webview = this.panel.webview;
+    this.adopt(
+      vscode.window.createWebviewPanel(VIEW_TYPE, 'Review', vscode.ViewColumn.Active, {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [media],
+      }),
+    );
+  }
+
+  // Takes over the panel VS Code brings back after a reload, or closes it when there is no review to show
+  restore(panel: vscode.WebviewPanel): void {
+    if (!this.review || this.panel) return panel.dispose();
+    this.adopt(panel);
+  }
+
+  private adopt(panel: vscode.WebviewPanel): void {
+    const media = vscode.Uri.joinPath(this.extensionUri, 'media');
+    this.panel = panel;
+    panel.iconPath = this.icon(false);
+    const webview = panel.webview;
+    webview.options = { enableScripts: true, localResourceRoots: [media] };
     const nonce = randomBytes(16).toString('hex');
     const asset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(media, name));
     webview.html = `<!DOCTYPE html>
@@ -164,13 +179,12 @@ export class Overview implements vscode.Disposable {
   }
 
   private async state(review: Review) {
-    const counts: Record<ThreadStatus, number> = { awaitingYou: 0, awaitingAgent: 0, resolved: 0 };
+    const counts = countStatuses(review.data.threads);
     const threads: ThreadView[] = [];
     this.stale = this.rendered;
     this.rendered = new Map();
     for (const t of review.data.threads) {
       const status = threadStatus(t);
-      counts[status]++;
       const pos = review.position(t);
       let snippet: ThreadView['snippet'];
       if (pos && t.file && t.snippet !== undefined) {
