@@ -1,15 +1,14 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
 import { TreeNode, flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
-import { ChangedFile, branches, git, repoRoot, worktrees } from './git';
-import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel, reviewMarkdown } from './model';
+import { ChangedFile, branches, commitOf, defaultBase, git, repoRoot, worktrees } from './git';
+import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel, reviewMarkdown, tildify } from './model';
 import { Overview, VIEW_TYPE, confirmDelete } from './overview';
 import { Review, ReviewChange, SCHEME, contentProvider, createReview, deleteReview } from './review';
-import { ReviewEntry, ReviewsView, countsLabel, entryLabel, listReviews } from './reviewsView';
+import { ReviewEntry, ReviewsView, Suggestion, countsLabel, entryLabel, listReviews } from './reviewsView';
 
 const ACTIVE_KEY = 'prereview.activeReview';
 
@@ -18,7 +17,7 @@ export class Controller implements vscode.Disposable {
   review?: Review;
   private readonly comments: CommentsController;
   private readonly reviews = new ReviewsView();
-  private readonly reviewsTree: vscode.TreeView<ReviewEntry>;
+  private readonly reviewsTree: vscode.TreeView<ReviewEntry | Suggestion>;
   private readonly files = new FilesView();
   private readonly tree: vscode.TreeView<TreeNode<ChangedFile>>;
   private readonly overview: Overview;
@@ -65,7 +64,7 @@ export class Controller implements vscode.Disposable {
         this.reveal(editor?.document.uri);
         this.updateActiveFile();
       }),
-      vscode.workspace.onDidChangeWorkspaceFolders(() => this.findRepository()),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => this.repository()),
       this.tree.onDidChangeCheckboxState(async (event) => {
         try {
           for (const [node, state] of event.items) {
@@ -79,7 +78,6 @@ export class Controller implements vscode.Disposable {
       }),
       ...this.registerCommands(),
     ];
-    void this.findRepository();
     this.restored = this.restore();
   }
 
@@ -92,7 +90,7 @@ export class Controller implements vscode.Disposable {
   async open(filePath: string): Promise<Review | undefined> {
     const ticket = ++this.opening;
     if (filePath === this.review?.filePath) return this.review;
-    const next = await Review.load(filePath, this.context.workspaceState);
+    const next = await Review.load(filePath, this.context.workspaceState, await this.repository());
     if (ticket !== this.opening) {
       next.dispose();
       return undefined;
@@ -102,6 +100,7 @@ export class Controller implements vscode.Disposable {
   }
 
   private async restore(): Promise<void> {
+    await this.repository();
     const saved = this.context.workspaceState.get<string>(ACTIVE_KEY);
     if (!saved) return;
     try {
@@ -113,8 +112,9 @@ export class Controller implements vscode.Disposable {
     }
   }
 
-  // Lists the reviews of the repository the first workspace folder is in, also once one is opened or created later
-  private async findRepository(): Promise<void> {
+  // The repository the first workspace folder is in, looked up each time since one can be opened or created
+  // later; its reviews are listed under Reviews
+  private async repository(): Promise<string | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     const root = folder && (await repoRoot(folder.uri.fsPath).catch(() => undefined));
     void vscode.commands.executeCommand('setContext', 'prereview.noRepository', !!folder && !root);
@@ -124,8 +124,9 @@ export class Controller implements vscode.Disposable {
     // A repository created in the folder, such as with Initialize Repository, shows up as a .git folder
     if (folder && !root) {
       this.repositoryWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git'));
-      this.repositoryWatcher.onDidCreate(() => void this.findRepository());
+      this.repositoryWatcher.onDidCreate(() => void this.repository());
     }
+    return root;
   }
 
   private setReview(next: Review | undefined): void {
@@ -263,7 +264,14 @@ export class Controller implements vscode.Disposable {
     const { comments, overview, files } = this;
     return [
       command('prereview.startReview', async () => {
-        const filePath = await pickReview();
+        const root = await this.repository();
+        if (!root) throw new Error(vscode.workspace.workspaceFolders ? "This folder isn't in a git repository." : 'Open a folder inside a git repository first.');
+        const filePath = await pickReview(root, this.reviews.suggestions);
+        if (filePath && (await this.open(filePath))) overview.show();
+      }),
+      command('prereview.reviewWorktree', async (suggestion: Suggestion) => {
+        const root = await this.repository();
+        const filePath = root && (await reviewWorktree(root, suggestion.branch));
         if (filePath && (await this.open(filePath))) overview.show();
       }),
       command('prereview.switchReview', async (entry: ReviewEntry) => {
@@ -414,29 +422,31 @@ async function openThread(review: Review, thread: Thread): Promise<void> {
   }
 }
 
-// Asks for a review to open or a pair to start one for, and returns the path of its file
-async function pickReview(): Promise<string | undefined> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) throw new Error('Open a folder inside a git repository first.');
-  const root = await repoRoot(folder.uri.fsPath);
+// Asks for a review to open, or what to compare in a new one, and returns the path of its file
+async function pickReview(root: string, suggestions: Suggestion[]): Promise<string | undefined> {
   const existing = (await listReviews(root)).map((e) => ({
     label: e.error ? `$(warning) ${entryLabel(e)}` : e.data.title || pairLabel(e.data),
     description: e.data.title ? pairLabel(e.data) : undefined,
     detail: e.error ? `${path.basename(e.filePath)} ${describeFileError(e.error)}` : countsLabel(e.counts),
     filePath: e.filePath,
   }));
-  if (existing.length) {
+  const worktreeItems = suggestions.map((s) => ({ label: `$(add) Review ${s.branch}`, description: `worktree at ${tildify(s.dir)}`, branch: s.branch }));
+  if (existing.length || worktreeItems.length) {
+    const separator = (label: string) => ({ label, kind: vscode.QuickPickItemKind.Separator });
     const picked = await vscode.window.showQuickPick(
-      [{ label: '$(add) New Review…' }, { label: 'Open reviews', kind: vscode.QuickPickItemKind.Separator }, ...existing],
+      [
+        { label: '$(add) New Review…' },
+        ...(worktreeItems.length ? [separator('Agent worktrees'), ...worktreeItems] : []),
+        ...(existing.length ? [separator('Open reviews'), ...existing] : []),
+      ],
       { placeHolder: 'Open a review or start a new one' },
     );
     if (!picked) return undefined;
     if ('filePath' in picked) return picked.filePath;
+    if ('branch' in picked) return reviewWorktree(root, picked.branch);
   }
   const refs = await branches(root);
-  const preferred = ['main', 'master', 'origin/main', 'origin/master'].find((b) => refs.includes(b));
-  const ordered = preferred ? [preferred, ...refs.filter((r) => r !== preferred)] : refs;
-  const base = await vscode.window.showQuickPick(ordered, { placeHolder: 'Base branch to compare against' });
+  const base = await pickBase(root, refs);
   if (!base) return undefined;
   const head = (await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
   const trees = await worktrees(root);
@@ -455,7 +465,34 @@ async function pickReview(): Promise<string | undefined> {
   return createReview(root, base, picked.target);
 }
 
-function tildify(dir: string): string {
-  const home = os.homedir();
-  return dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir;
+// Starts a review of a worktree's branch against the default branch, and asks for a base only without one
+async function reviewWorktree(root: string, branch: string): Promise<string | undefined> {
+  const refs = await branches(root);
+  const base = defaultBase(refs) ?? (await pickBase(root, refs));
+  return base && createReview(root, base, branch);
+}
+
+// A branch, most recently committed first, or any commit, tag or revision such as HEAD~3 typed in. A typed one
+// is pinned to the commit it points at now, so the review doesn't shift as new commits come in.
+async function pickBase(root: string, refs: string[]): Promise<string | undefined> {
+  const preferred = defaultBase(refs);
+  const items = (preferred ? [preferred, ...refs.filter((r) => r !== preferred)] : refs).map((label) => ({ label }));
+  const quickPick = vscode.window.createQuickPick();
+  quickPick.placeholder = 'Base to compare against: a branch, or type a commit, tag or HEAD~3';
+  quickPick.items = items;
+  quickPick.onDidChangeValue((value) => {
+    const typed = value.trim();
+    quickPick.items = typed && !refs.includes(typed) ? [{ label: typed, description: 'commit, tag or revision' }, ...items] : items;
+  });
+  const picked = await new Promise<string | undefined>((resolve) => {
+    quickPick.onDidAccept(() => {
+      resolve(quickPick.selectedItems[0]?.label);
+      quickPick.hide();
+    });
+    quickPick.onDidHide(() => resolve(undefined));
+    quickPick.show();
+  });
+  quickPick.dispose();
+  if (!picked || refs.includes(picked)) return picked;
+  return (await commitOf(root, picked)).slice(0, 12);
 }

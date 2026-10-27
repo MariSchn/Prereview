@@ -1,7 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChangedFile, catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktrees } from './git';
+import { ChangedFile, catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktreeList, worktrees } from './git';
+import { listReviews } from './reviewsView';
 import {
   FileError,
   REVIEWER,
@@ -76,9 +77,14 @@ function lastReadKey(filePath: string): string {
   return `prereview.lastRead:${filePath}`;
 }
 
-// Creates the review file for a pair, or finds the one that exists, and returns its path
+// Finds the review file of a pair, in any worktree, or creates it, and returns its path. A review of a branch
+// checked out in another worktree goes in that worktree, where the agent working there may write it.
 export async function createReview(root: string, base: string, target: string | null): Promise<string> {
-  const filePath = await reviewFilePath(root, base, target);
+  const trees = await worktreeList(root).catch(() => []);
+  const existing = (await listReviews(root, trees)).find((e) => e.data.base === base && e.data.target === target);
+  if (existing) return existing.filePath;
+  const dir = (target && trees.find((w) => w.branch === target)?.dir) || root;
+  const filePath = await reviewFilePath(dir, base, target);
   try {
     await fs.access(filePath);
   } catch {
@@ -120,6 +126,7 @@ export class Review implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<ReviewChange>();
   readonly onDidChange = this.changed.event;
   private readonly watcher: vscode.FileSystemWatcher;
+  private readonly fileWatcher?: vscode.FileSystemWatcher;
   private readonly listeners: vscode.Disposable[];
   private targetWatcher?: vscode.FileSystemWatcher;
   private timer?: NodeJS.Timeout;
@@ -168,6 +175,8 @@ export class Review implements vscode.Disposable {
     private readonly state: vscode.Memento,
   ) {
     this.watcher = this.watch(root);
+    // A review kept in another worktree changes there, whatever that worktree has checked out
+    this.fileWatcher = isInside(filePath, root) ? undefined : this.watch(path.dirname(filePath));
     this.hints = state.get<Record<string, [number, number]>>(anchorsKey(filePath)) ?? {};
     this.listeners = [
       vscode.workspace.onDidChangeTextDocument((e) => {
@@ -183,10 +192,12 @@ export class Review implements vscode.Disposable {
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
-    return Review.load(await createReview(root, base, target), state);
+    return Review.load(await createReview(root, base, target), state, root);
   }
 
-  static async load(filePath: string, state: vscode.Memento): Promise<Review> {
+  // `root` is the repository checkout the review is looked at from, which isn't where the file is when it was
+  // kept in the worktree of the branch under review
+  static async load(filePath: string, state: vscode.Memento, root = path.dirname(path.dirname(filePath))): Promise<Review> {
     const text = await fs.readFile(filePath, 'utf8');
     let data: ReviewData;
     try {
@@ -198,7 +209,7 @@ export class Review implements vscode.Disposable {
       if (!last && !pair) throw new Error(`${path.basename(filePath)} ${describeFileError(fileError(e as Error, text))}.`);
       data = last ?? { title: '', description: '', base: pair!.base, target: pair!.target, threads: [] };
     }
-    const review = new Review(path.dirname(path.dirname(filePath)), filePath, data, state);
+    const review = new Review(root, filePath, data, state);
     await review.refresh();
     return review;
   }
@@ -459,6 +470,7 @@ export class Review implements vscode.Disposable {
       this.saveHints();
     }
     this.watcher.dispose();
+    this.fileWatcher?.dispose();
     this.targetWatcher?.dispose();
     for (const listener of this.listeners) listener.dispose();
     this.changed.dispose();
