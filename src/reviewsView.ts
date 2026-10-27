@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { worktreeList } from './git';
+import { Worktree, branches, defaultBase, git, worktreeList } from './git';
 import { FileError, ReviewData, ThreadStatus, countStatuses, describeFileError, fileError, pairLabel, parseReview, readPair, tildify } from './model';
 
 export interface ReviewEntry {
@@ -18,10 +18,16 @@ export interface Suggestion {
   dir: string;
 }
 
-// The reviews of a repository: in its own .prereview folder, and in those of its other worktrees
-export async function listReviews(root: string, dirs?: string[]): Promise<ReviewEntry[]> {
-  dirs ??= [root, ...(await worktreeList(root).catch(() => [])).map((w) => w.dir).filter((dir) => dir !== root)];
-  return (await Promise.all(dirs.map(readReviews))).flat();
+// The reviews of a repository: in its own .prereview folder, and in those of its other worktrees, except their
+// reviews of the working tree, which only show that worktree's changes. Files that can't be read are all listed.
+export async function listReviews(root: string, trees?: Worktree[]): Promise<ReviewEntry[]> {
+  trees ??= await worktreeList(root).catch(() => []);
+  const lists = await Promise.all(reviewDirs(root, trees).map(readReviews));
+  return lists.flatMap((entries, i) => (i === 0 ? entries : entries.filter((e) => !e.data.base || e.data.target !== null)));
+}
+
+function reviewDirs(root: string, trees: Worktree[]): string[] {
+  return [root, ...trees.map((w) => w.dir).filter((dir) => dir !== root)];
 }
 
 async function readReviews(worktree: string): Promise<ReviewEntry[]> {
@@ -82,6 +88,7 @@ export class ReviewsView implements vscode.TreeDataProvider<Item>, vscode.Dispos
   private timer?: NodeJS.Timeout;
   private version = 0;
   private root?: string;
+  private gitDir?: Promise<string>;
   entries: ReviewEntry[] = [];
   suggestions: Suggestion[] = [];
   active?: string;
@@ -89,6 +96,11 @@ export class ReviewsView implements vscode.TreeDataProvider<Item>, vscode.Dispos
   setRoot(root: string): void {
     if (root === this.root) return;
     this.root = root;
+    // Where the repository lists its worktrees, which is outside the root when that is a linked worktree itself
+    this.gitDir = git(root, ['rev-parse', '--git-common-dir']).then(
+      (out) => path.resolve(root, out.trim()),
+      () => path.join(root, '.git'),
+    );
     void this.refresh();
   }
 
@@ -100,21 +112,22 @@ export class ReviewsView implements vscode.TreeDataProvider<Item>, vscode.Dispos
   async refresh(): Promise<void> {
     const version = ++this.version;
     const root = this.root;
-    const trees = root ? await worktreeList(root).catch(() => [{ dir: root, branch: undefined }]) : [];
-    const dirs = root ? [root, ...trees.map((w) => w.dir).filter((dir) => dir !== root)] : [];
-    const entries = root ? await listReviews(root, dirs) : [];
+    const trees = root ? await worktreeList(root).catch(() => []) : [];
+    const entries = root ? await listReviews(root, trees) : [];
+    // Other worktrees' branches without a review, except the default branch, which reviews compare with
+    const unreviewed = trees.filter((w) => w.branch && w.dir !== root && !entries.some((e) => e.data.target === w.branch));
+    const base = root && unreviewed.length ? defaultBase(await branches(root).catch(() => [])) : undefined;
+    const gitDir = await this.gitDir;
     if (version !== this.version) return;
-    if (root) this.watch(root, dirs);
+    if (root && gitDir) this.watch(reviewDirs(root, trees), gitDir);
     this.entries = entries;
-    this.suggestions = trees
-      .filter((w) => w.branch && w.dir !== root && !entries.some((e) => e.data.target === w.branch))
-      .map((w) => ({ branch: w.branch!, dir: w.dir }));
+    this.suggestions = unreviewed.filter((w) => w.branch !== base).map((w) => ({ branch: w.branch!, dir: w.dir }));
     this.changed.fire();
   }
 
   // The review folders of all worktrees, and the repository's list of worktrees, which agents add and remove
-  private watch(root: string, dirs: string[]): void {
-    const key = dirs.join('\n');
+  private watch(dirs: string[], gitDir: string): void {
+    const key = [...dirs, gitDir].join('\n');
     if (key === this.watched) return;
     this.watched = key;
     for (const watcher of this.watchers) watcher.dispose();
@@ -122,7 +135,7 @@ export class ReviewsView implements vscode.TreeDataProvider<Item>, vscode.Dispos
       clearTimeout(this.timer);
       this.timer = setTimeout(() => void this.refresh(), 300);
     };
-    const patterns = [...dirs.map((dir) => new vscode.RelativePattern(dir, '.prereview/*.json')), new vscode.RelativePattern(root, '.git/worktrees/*')];
+    const patterns = [...dirs.map((dir) => new vscode.RelativePattern(dir, '.prereview/*.json')), new vscode.RelativePattern(gitDir, 'worktrees/*')];
     this.watchers = patterns.map((pattern) => {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
       watcher.onDidChange(schedule);

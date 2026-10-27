@@ -47,16 +47,27 @@ export async function branches(root: string): Promise<string[]> {
     .map((ref) => ref.replace(/^refs\/(heads|remotes)\//, ''));
 }
 
+// The branch reviews compare with when none is picked
+export function defaultBase(refs: string[]): string | undefined {
+  return ['main', 'master', 'origin/main', 'origin/master'].find((b) => refs.includes(b));
+}
+
+export interface Worktree {
+  dir: string;
+  branch?: string;
+}
+
+// The folders of branches checked out in a worktree
 export async function worktrees(root: string): Promise<Map<string, string>> {
-  return parseWorktrees(await git(root, ['worktree', 'list', '--porcelain']));
+  return new Map((await worktreeList(root)).filter((w) => w.branch).map((w): [string, string] => [w.branch!, w.dir]));
 }
 
 // Every worktree of the repository, the main one first, with the branch checked out in it
-export async function worktreeList(root: string): Promise<{ dir: string; branch?: string }[]> {
+export async function worktreeList(root: string): Promise<Worktree[]> {
   return parseWorktreeList(await git(root, ['worktree', 'list', '--porcelain']));
 }
 
-export function parseWorktreeList(out: string): { dir: string; branch?: string }[] {
+export function parseWorktreeList(out: string): Worktree[] {
   const list: { dir: string; branch?: string; prunable?: boolean }[] = [];
   for (const line of out.split('\n')) {
     if (line.startsWith('worktree ')) list.push({ dir: line.slice('worktree '.length) });
@@ -64,24 +75,6 @@ export function parseWorktreeList(out: string): { dir: string; branch?: string }
     else if (line.startsWith('prunable') && list.length) list[list.length - 1].prunable = true;
   }
   return list.filter((w) => !w.prunable).map(({ dir, branch }) => ({ dir, branch }));
-}
-
-export function parseWorktrees(out: string): Map<string, string> {
-  const byBranch = new Map<string, string>();
-  let dir: string | undefined;
-  let branch: string | undefined;
-  for (const line of out.split('\n')) {
-    if (line.startsWith('worktree ')) {
-      dir = line.slice('worktree '.length);
-      branch = undefined;
-    } else if (line.startsWith('branch refs/heads/') && dir) {
-      branch = line.slice('branch refs/heads/'.length);
-      byBranch.set(branch, dir);
-    } else if (line.startsWith('prunable') && branch) {
-      byBranch.delete(branch);
-    }
-  }
-  return byBranch;
 }
 
 function rev(ref: string): string {

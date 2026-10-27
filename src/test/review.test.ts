@@ -8,7 +8,7 @@ import * as fake from './fakeVscode';
 import { git } from '../git';
 import { REVIEWER } from '../model';
 import { Review, contentProvider, createReview } from '../review';
-import { listReviews } from '../reviewsView';
+import { ReviewsView, listReviews } from '../reviewsView';
 
 // A repository with `base` committed on main and the review folder ignored, as Prereview leaves it
 async function repo(base: Record<string, string>) {
@@ -474,7 +474,55 @@ test("a review of a worktree's branch is kept in that worktree, and found from t
     const older = await createReview(r.root, 'main', null);
     assert.strictEqual(path.dirname(older), path.join(r.root, '.prereview'));
     assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.data.target), [null, 'agent']);
+    // A review of the working tree belongs to the checkout it was started in
+    const theirs = await createReview(worktree, 'main', null);
+    assert.strictEqual(path.dirname(theirs), path.join(worktree, '.prereview'));
+    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.filePath), [older, filePath]);
+    assert.deepStrictEqual((await listReviews(worktree)).map((e) => e.filePath), [filePath, theirs]);
   } finally {
+    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    fs.rmSync(worktree, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('a review kept in another checkout reads the replies written there', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  const worktree = `${r.root}-agent`;
+  try {
+    await git(r.root, ['branch', 'feature']);
+    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    // Looked at from the agent's worktree, a review of a branch that isn't checked out stays in the main checkout
+    const review = await Review.load(await createReview(r.root, 'main', 'feature'), new fake.Memento(), worktree);
+    await review.addThread({}, 'general');
+    const data = onDisk(review);
+    data.threads[0].comments.push({ author: 'agent', body: 'answer' });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    fake.touch(review.filePath);
+    await sleep(600);
+    assert.strictEqual(review.data.threads[0].comments.length, 2);
+    review.dispose();
+  } finally {
+    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    fs.rmSync(worktree, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('worktrees without a review are suggested, except the one with the default branch', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  const worktree = `${r.root}-agent`;
+  const view = new ReviewsView();
+  try {
+    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    view.setRoot(r.root);
+    await view.refresh();
+    assert.deepStrictEqual(view.suggestions, [{ branch: 'agent', dir: worktree }]);
+    view.setRoot(worktree);
+    await view.refresh();
+    assert.deepStrictEqual(view.suggestions, []);
+  } finally {
+    view.dispose();
     await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
     fs.rmSync(worktree, { recursive: true, force: true });
     r.cleanup();

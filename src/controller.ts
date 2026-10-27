@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
 import { TreeNode, flatten } from './fileTree';
 import { FileItem, FilesView } from './filesView';
-import { ChangedFile, branches, commitOf, git, repoRoot, worktrees } from './git';
+import { ChangedFile, branches, commitOf, defaultBase, git, repoRoot, worktrees } from './git';
 import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel, reviewMarkdown, tildify } from './model';
 import { Overview, VIEW_TYPE, confirmDelete } from './overview';
 import { Review, ReviewChange, SCHEME, contentProvider, createReview, deleteReview } from './review';
@@ -470,10 +470,6 @@ async function reviewWorktree(root: string, branch: string): Promise<string | un
   const refs = await branches(root);
   const base = defaultBase(refs) ?? (await pickBase(root, refs));
   return base && createReview(root, base, branch);
-}
-
-function defaultBase(refs: string[]): string | undefined {
-  return ['main', 'master', 'origin/main', 'origin/master'].find((b) => refs.includes(b));
 }
 
 // A branch, most recently committed first, or any commit, tag or revision such as HEAD~3 typed in. A typed one
