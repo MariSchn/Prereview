@@ -683,6 +683,7 @@ kbd {
     flex-direction: column;
     gap: 12px;
     max-height: calc(100vh - var(--topbar) - 40px);
+    overflow-y: auto;
   }
 
   .status-card {
@@ -705,7 +706,7 @@ kbd {
   .files-card {
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    min-height: 120px;
   }
 
   .file-list {
