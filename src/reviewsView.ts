@@ -1,7 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { FileError, ReviewData, ThreadStatus, countStatuses, describeFileError, fileError, pairLabel, parseReview, readPair } from './model';
+import { worktreeList } from './git';
+import { FileError, ReviewData, ThreadStatus, countStatuses, describeFileError, fileError, pairLabel, parseReview, readPair, tildify } from './model';
 
 export interface ReviewEntry {
   filePath: string;
@@ -11,8 +12,20 @@ export interface ReviewEntry {
   error?: FileError;
 }
 
-export async function listReviews(root: string): Promise<ReviewEntry[]> {
-  const dir = path.join(root, '.prereview');
+// A branch checked out in another worktree, such as an agent's, that has no review yet
+export interface Suggestion {
+  branch: string;
+  dir: string;
+}
+
+// The reviews of a repository: in its own .prereview folder, and in those of its other worktrees
+export async function listReviews(root: string, dirs?: string[]): Promise<ReviewEntry[]> {
+  dirs ??= [root, ...(await worktreeList(root).catch(() => [])).map((w) => w.dir).filter((dir) => dir !== root)];
+  return (await Promise.all(dirs.map(readReviews))).flat();
+}
+
+async function readReviews(worktree: string): Promise<ReviewEntry[]> {
+  const dir = path.join(worktree, '.prereview');
   const names = await fs.readdir(dir).catch(() => [] as string[]);
   const entries: ReviewEntry[] = [];
   for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
@@ -59,28 +72,23 @@ function icon(counts: Record<ThreadStatus, number>): vscode.ThemeIcon {
   return new vscode.ThemeIcon('git-pull-request');
 }
 
-export class ReviewsView implements vscode.TreeDataProvider<ReviewEntry>, vscode.Disposable {
+type Item = ReviewEntry | Suggestion;
+
+export class ReviewsView implements vscode.TreeDataProvider<Item>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
-  private watcher?: vscode.FileSystemWatcher;
+  private watchers: vscode.FileSystemWatcher[] = [];
+  private watched = '';
   private timer?: NodeJS.Timeout;
   private version = 0;
   private root?: string;
   entries: ReviewEntry[] = [];
+  suggestions: Suggestion[] = [];
   active?: string;
 
   setRoot(root: string): void {
     if (root === this.root) return;
     this.root = root;
-    this.watcher?.dispose();
-    this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '.prereview/*.json'));
-    const schedule = () => {
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => void this.refresh(), 300);
-    };
-    this.watcher.onDidChange(schedule);
-    this.watcher.onDidCreate(schedule);
-    this.watcher.onDidDelete(schedule);
     void this.refresh();
   }
 
@@ -91,40 +99,80 @@ export class ReviewsView implements vscode.TreeDataProvider<ReviewEntry>, vscode
 
   async refresh(): Promise<void> {
     const version = ++this.version;
-    const entries = this.root ? await listReviews(this.root) : [];
+    const root = this.root;
+    const trees = root ? await worktreeList(root).catch(() => [{ dir: root, branch: undefined }]) : [];
+    const dirs = root ? [root, ...trees.map((w) => w.dir).filter((dir) => dir !== root)] : [];
+    const entries = root ? await listReviews(root, dirs) : [];
     if (version !== this.version) return;
+    if (root) this.watch(root, dirs);
     this.entries = entries;
+    this.suggestions = trees
+      .filter((w) => w.branch && w.dir !== root && !entries.some((e) => e.data.target === w.branch))
+      .map((w) => ({ branch: w.branch!, dir: w.dir }));
     this.changed.fire();
   }
 
-  getChildren(entry?: ReviewEntry): ReviewEntry[] {
-    return entry ? [] : this.entries;
+  // The review folders of all worktrees, and the repository's list of worktrees, which agents add and remove
+  private watch(root: string, dirs: string[]): void {
+    const key = dirs.join('\n');
+    if (key === this.watched) return;
+    this.watched = key;
+    for (const watcher of this.watchers) watcher.dispose();
+    const schedule = () => {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => void this.refresh(), 300);
+    };
+    const patterns = [...dirs.map((dir) => new vscode.RelativePattern(dir, '.prereview/*.json')), new vscode.RelativePattern(root, '.git/worktrees/*')];
+    this.watchers = patterns.map((pattern) => {
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+      watcher.onDidChange(schedule);
+      watcher.onDidCreate(schedule);
+      watcher.onDidDelete(schedule);
+      return watcher;
+    });
   }
 
-  getTreeItem(entry: ReviewEntry): vscode.TreeItem {
+  getChildren(item?: Item): Item[] {
+    return item ? [] : [...this.entries, ...this.suggestions];
+  }
+
+  getTreeItem(item: Item): vscode.TreeItem {
+    if (!('filePath' in item)) {
+      const suggestion = new vscode.TreeItem(`Review ${item.branch}`);
+      suggestion.id = `suggestion:${item.dir}`;
+      suggestion.description = `worktree at ${tildify(item.dir)}`;
+      suggestion.tooltip = `${item.branch} is checked out in ${item.dir}. Start a review of it.`;
+      suggestion.iconPath = new vscode.ThemeIcon('add');
+      suggestion.contextValue = 'suggestion';
+      suggestion.command = { command: 'prereview.reviewWorktree', title: 'Start Review', arguments: [item] };
+      return suggestion;
+    }
+    const entry = item;
     const pair = entryLabel(entry);
     const active = entry.filePath === this.active;
-    const item = new vscode.TreeItem(entry.data.title || pair);
-    item.id = entry.filePath;
-    item.description = [
-      active && 'active',
-      entry.data.title && pair,
-      entry.error ? "can't be read" : entry.counts.awaitingYou && `${entry.counts.awaitingYou} awaiting you`,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    item.tooltip = entry.error
+    const tree = new vscode.TreeItem(entry.data.title || pair);
+    tree.id = entry.filePath;
+    tree.description = [active && 'active', entry.data.title && pair, entry.error ? "can't be read" : turn(entry.counts)].filter(Boolean).join(' · ');
+    tree.tooltip = entry.error
       ? `${path.basename(entry.filePath)} ${describeFileError(entry.error)}.\n${entry.error.message}`
-      : `${entry.data.title ? `${entry.data.title}\n` : ''}${pair}\n${countsLabel(entry.counts)}`;
-    item.iconPath = entry.error ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground')) : icon(entry.counts);
-    item.contextValue = 'review';
-    item.command = { command: 'prereview.switchReview', title: 'Open Review', arguments: [entry] };
-    return item;
+      : `${entry.data.title ? `${entry.data.title}\n` : ''}${pair}\n${countsLabel(entry.counts)}\n${tildify(entry.filePath)}`;
+    tree.iconPath = entry.error ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground')) : icon(entry.counts);
+    tree.contextValue = 'review';
+    tree.command = { command: 'prereview.switchReview', title: 'Open Review', arguments: [entry] };
+    return tree;
   }
 
   dispose(): void {
     clearTimeout(this.timer);
-    this.watcher?.dispose();
+    for (const watcher of this.watchers) watcher.dispose();
     this.changed.dispose();
   }
+}
+
+// Whose move it is in a review
+function turn(counts: Record<ThreadStatus, number>): string | undefined {
+  if (counts.awaitingYou) return `your turn · ${counts.awaitingYou} waiting`;
+  if (counts.awaitingAgent) return "agent's turn";
+  if (counts.resolved) return 'all resolved';
+  return undefined;
 }

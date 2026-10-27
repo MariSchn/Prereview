@@ -3,7 +3,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
-import { catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, parseNumstat, parseRaw, parseWorktrees, revParse, show } from '../git';
+import {
+  branches,
+  catBlob,
+  changedFiles,
+  commitOf,
+  git,
+  hashObjects,
+  ignoredPaths,
+  mergeBase,
+  parseNumstat,
+  parseRaw,
+  parseWorktreeList,
+  parseWorktrees,
+  revParse,
+  show,
+} from '../git';
 
 const SHA = 'a'.repeat(40);
 const ZERO = '0'.repeat(40);
@@ -177,6 +192,26 @@ test('ignoredPaths finds the paths git ignores', async () => {
     assert.deepStrictEqual([...(await ignoredPaths(r.root, ['a.txt']))!], []);
     // A path git can't answer for gives no answer, rather than "not ignored"
     assert.strictEqual(await ignoredPaths(r.root, ['../outside.log']), undefined);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('parseWorktreeList lists every worktree with its branch, without the ones that are gone', () => {
+  const out = 'worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /wt/x\nHEAD 2\ndetached\n\nworktree /wt/y\nHEAD 3\nbranch refs/heads/y\nprunable gitdir file points to non-existent location\n';
+  assert.deepStrictEqual(parseWorktreeList(out), [{ dir: '/repo', branch: 'main' }, { dir: '/wt/x', branch: undefined }]);
+});
+
+test('branches lists the most recently committed first, and commitOf resolves any revision', async () => {
+  const r = await tempRepo({ 'a.txt': 'a\n' });
+  try {
+    await git(r.root, ['branch', 'old']);
+    await git(r.root, ['checkout', '-qb', 'new']);
+    r.write('a.txt', 'b\n');
+    await git(r.root, ['commit', '-qam', 'later'], undefined, { env: { GIT_COMMITTER_DATE: '2030-01-01T00:00:00' } });
+    assert.deepStrictEqual((await branches(r.root))[0], 'new');
+    assert.strictEqual(await commitOf(r.root, 'HEAD~1'), r.base);
+    await assert.rejects(commitOf(r.root, 'nope'), /"nope" isn't a branch, tag or commit/);
   } finally {
     r.cleanup();
   }

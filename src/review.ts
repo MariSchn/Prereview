@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChangedFile, catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktrees } from './git';
+import { listReviews } from './reviewsView';
 import {
   FileError,
   REVIEWER,
@@ -76,9 +77,13 @@ function lastReadKey(filePath: string): string {
   return `prereview.lastRead:${filePath}`;
 }
 
-// Creates the review file for a pair, or finds the one that exists, and returns its path
+// Finds the review file of a pair, in any worktree, or creates it, and returns its path. A review of a branch
+// checked out in another worktree goes in that worktree, where the agent working there may write it.
 export async function createReview(root: string, base: string, target: string | null): Promise<string> {
-  const filePath = await reviewFilePath(root, base, target);
+  const existing = (await listReviews(root)).find((e) => !e.error && e.data.base === base && e.data.target === target);
+  if (existing) return existing.filePath;
+  const dir = (target && (await worktrees(root)).get(target)) || root;
+  const filePath = await reviewFilePath(dir, base, target);
   try {
     await fs.access(filePath);
   } catch {
@@ -183,10 +188,12 @@ export class Review implements vscode.Disposable {
   }
 
   static async open(root: string, base: string, target: string | null, state: vscode.Memento): Promise<Review> {
-    return Review.load(await createReview(root, base, target), state);
+    return Review.load(await createReview(root, base, target), state, root);
   }
 
-  static async load(filePath: string, state: vscode.Memento): Promise<Review> {
+  // `root` is the repository checkout the review is looked at from, which isn't where the file is when it was
+  // kept in the worktree of the branch under review
+  static async load(filePath: string, state: vscode.Memento, root = path.dirname(path.dirname(filePath))): Promise<Review> {
     const text = await fs.readFile(filePath, 'utf8');
     let data: ReviewData;
     try {
@@ -198,7 +205,7 @@ export class Review implements vscode.Disposable {
       if (!last && !pair) throw new Error(`${path.basename(filePath)} ${describeFileError(fileError(e as Error, text))}.`);
       data = last ?? { title: '', description: '', base: pair!.base, target: pair!.target, threads: [] };
     }
-    const review = new Review(path.dirname(path.dirname(filePath)), filePath, data, state);
+    const review = new Review(root, filePath, data, state);
     await review.refresh();
     return review;
   }

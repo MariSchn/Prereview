@@ -117,6 +117,10 @@
         "title": "Open Review"
       },
       {
+        "command": "prereview.reviewWorktree",
+        "title": "Start Review"
+      },
+      {
         "command": "prereview.openOverview",
         "title": "Open Overview",
         "category": "Prereview",
@@ -495,6 +499,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "prereview.reviewWorktree",
+          "when": "false"
+        },
         {
           "command": "prereview.revealInExplorer",
           "when": "false"

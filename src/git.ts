@@ -38,8 +38,9 @@ export async function repoRoot(cwd: string): Promise<string> {
   return (await git(cwd, ['rev-parse', '--show-toplevel'])).trim();
 }
 
+// Local and remote branches, the most recently committed to first
 export async function branches(root: string): Promise<string[]> {
-  const out = await git(root, ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes']);
+  const out = await git(root, ['for-each-ref', '--sort=-committerdate', '--format=%(refname)', 'refs/heads', 'refs/remotes']);
   return out
     .split('\n')
     .filter((ref) => ref && !ref.endsWith('/HEAD'))
@@ -48,6 +49,21 @@ export async function branches(root: string): Promise<string[]> {
 
 export async function worktrees(root: string): Promise<Map<string, string>> {
   return parseWorktrees(await git(root, ['worktree', 'list', '--porcelain']));
+}
+
+// Every worktree of the repository, the main one first, with the branch checked out in it
+export async function worktreeList(root: string): Promise<{ dir: string; branch?: string }[]> {
+  return parseWorktreeList(await git(root, ['worktree', 'list', '--porcelain']));
+}
+
+export function parseWorktreeList(out: string): { dir: string; branch?: string }[] {
+  const list: { dir: string; branch?: string; prunable?: boolean }[] = [];
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) list.push({ dir: line.slice('worktree '.length) });
+    else if (line.startsWith('branch refs/heads/') && list.length) list[list.length - 1].branch = line.slice('branch refs/heads/'.length);
+    else if (line.startsWith('prunable') && list.length) list[list.length - 1].prunable = true;
+  }
+  return list.filter((w) => !w.prunable).map(({ dir, branch }) => ({ dir, branch }));
 }
 
 export function parseWorktrees(out: string): Map<string, string> {
@@ -71,6 +87,15 @@ export function parseWorktrees(out: string): Map<string, string> {
 function rev(ref: string): string {
   if (ref.startsWith('-')) throw new Error(`Invalid revision "${ref}"`);
   return ref;
+}
+
+// The commit a branch, tag or other revision such as HEAD~3 points at, or an error naming it
+export async function commitOf(root: string, ref: string): Promise<string> {
+  try {
+    return (await git(root, ['rev-parse', '--verify', '--quiet', `${rev(ref)}^{commit}`])).trim();
+  } catch {
+    throw new Error(`"${ref}" isn't a branch, tag or commit in this repository.`);
+  }
 }
 
 export async function revParse(root: string, ref: string): Promise<string> {

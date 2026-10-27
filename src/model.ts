@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 
 export const REVIEWER = 'reviewer';
@@ -98,6 +99,12 @@ export function reviewMarkdown(data: ReviewData, lines: (thread: Thread) => Span
     for (const c of t.comments) out.push(`**${authorName(c.author)}:**`, '', c.body, '');
   }
   return out.join('\n').trimEnd() + '\n';
+}
+
+// A path with the home folder shortened to ~
+export function tildify(dir: string): string {
+  const home = os.homedir();
+  return dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir;
 }
 
 export function reviewFileName(base: string, target: string | null): string {

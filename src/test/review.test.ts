@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import * as fake from './fakeVscode';
 import { git } from '../git';
 import { REVIEWER } from '../model';
-import { Review, contentProvider } from '../review';
+import { Review, contentProvider, createReview } from '../review';
 import { listReviews } from '../reviewsView';
 
 // A repository with `base` committed on main and the review folder ignored, as Prereview leaves it
@@ -451,6 +451,32 @@ test('a viewed file is unticked when it changes, and the snapshot shows what it 
     assert.deepStrictEqual([review.viewState(file('a.ts')), review.sinceViewedUris(file('a.ts'))], ['unviewed', undefined]);
     review.dispose();
   } finally {
+    r.cleanup();
+  }
+});
+
+test("a review of a worktree's branch is kept in that worktree, and found from the main checkout", async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  const worktree = `${r.root}-agent`;
+  try {
+    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    fs.writeFileSync(path.join(worktree, 'a.ts'), lines('one', 'uncommitted'));
+    const filePath = await createReview(r.root, 'main', 'agent');
+    assert.strictEqual(path.dirname(filePath), path.join(worktree, '.prereview'));
+    assert.strictEqual(fs.readFileSync(path.join(worktree, '.prereview', '.gitignore'), 'utf8'), '*\n');
+    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.filePath), [filePath]);
+    // Opened from the main checkout, it still shows the worktree's uncommitted changes
+    const review = await Review.load(filePath, new fake.Memento(), r.root);
+    assert.deepStrictEqual([review.targetDir, review.files.map((f) => [f.path, f.added])], [worktree, [['a.ts', 1]]]);
+    review.dispose();
+    // Starting the same review again opens this one, and one kept in the main checkout is found too
+    assert.strictEqual(await createReview(r.root, 'main', 'agent'), filePath);
+    const older = await createReview(r.root, 'main', null);
+    assert.strictEqual(path.dirname(older), path.join(r.root, '.prereview'));
+    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.data.target), [null, 'agent']);
+  } finally {
+    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    fs.rmSync(worktree, { recursive: true, force: true });
     r.cleanup();
   }
 });

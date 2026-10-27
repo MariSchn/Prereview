@@ -40,7 +40,7 @@ Prereview needs VS Code 1.99 or later and a local git repository. It is not publ
 
 ## Use
 
-1. Open **Prereview** in the activity bar and click **Start Review**. Pick the base branch, then what to compare it with.
+1. Open **Prereview** in the activity bar and click **Start Review**. Pick the base branch, or type any commit, tag or `HEAD~3`, then what to compare it with. Branches checked out in other worktrees, such as an agent's, are also offered under **Reviews** as one-click reviews.
    - **Working tree** is the branch you have open, plus uncommitted changes.
    - **Another branch** shows that branch's commits. If the branch is checked out in another worktree, for example an agent's, the review includes that worktree's uncommitted changes, and you can edit the code right in the diff.
 2. The overview works like a pull request's Conversation tab. It shows the title and description, every thread, and a box for a general comment.
@@ -49,7 +49,7 @@ Prereview needs VS Code 1.99 or later and a local git repository. It is not publ
 5. Click **Copy path for agent** and paste the path into Claude Code, Codex, Cursor, or whichever agent made the change. The review file tells it how to reply. Replies show up on their own. The badge on the Prereview icon counts threads waiting on you.
 6. **Finish review** deletes the review and its comments. To keep them, copy the review as Markdown first, from the same dialog or with **Copy Review as Markdown**.
 
-You can keep several reviews at once, one per agent or branch. **Reviews** lists them. Click one to switch.
+You can keep several reviews at once, one per agent or branch. **Reviews** lists them with whose turn it is. Click one to switch.
 
 <img src="docs/assets/overview.png" width="880" alt="The review overview, with the agent's description and a thread waiting on you">
 
@@ -57,7 +57,7 @@ You can keep several reviews at once, one per agent or branch. **Reviews** lists
 
 ## The review file
 
-Each review is a JSON file in `.prereview/` at the repository root. The folder ignores itself, so the files are not committed.
+Each review is a JSON file in `.prereview/` at the repository root. A review of a branch checked out in another worktree is kept in that worktree's `.prereview/` instead, so an agent working there can write to it without asking for permission; it goes away when the worktree is removed. The folder ignores itself, so the files are not committed.
 
 ```json
 {
