@@ -47,7 +47,7 @@ Prereview needs VS Code 1.99 or later and a local git repository. It is not publ
 3. **Changed Files** lists the diff as a tree, with additions and deletions. Click a file to open it. Tick a file, or a whole folder, once you have reviewed it. If it changes after that, it is unticked, and **Open Changes Since Viewed** (in the file's row, the diff's title bar and the overview) shows only the new part. **Open All Changes Since Viewed** shows them for every such file at once.
 4. Hover the line numbers in a diff and click **+** to comment. Drag to cover a range. You can also comment on a whole file, on a deleted line, or on the change as a whole. Resolve a thread when you are done with it.
 5. Click **Copy path for agent** and paste the path into Claude Code, Codex, Cursor, or whichever agent made the change. The review file tells it how to reply. Replies show up on their own. The badge on the Prereview icon counts threads waiting on you.
-6. **Finish review** deletes the review and its comments.
+6. **Finish review** deletes the review and its comments. To keep them, copy the review as Markdown first, from the same dialog or with **Copy Review as Markdown**.
 
 You can keep several reviews at once, one per agent or branch. **Reviews** lists them. Click one to switch.
 

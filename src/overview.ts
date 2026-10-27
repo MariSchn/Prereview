@@ -128,6 +128,8 @@ export class Overview implements vscode.Disposable {
   private async handle(message: any): Promise<void> {
     const review = this.review;
     if (!review || typeof message?.type !== 'string') return;
+    // Sent from the page while it still showed another review
+    if (message.type !== 'ready' && message.reviewId !== review.filePath) return;
     const body = typeof message.body === 'string' ? message.body.trim() : '';
     switch (message.type) {
       case 'ready':
@@ -162,12 +164,12 @@ export class Overview implements vscode.Disposable {
         return vscode.commands.executeCommand('prereview.openReviewFile');
       case 'openFile': {
         const file = review.files.find((f) => f.path === message.path);
-        if (file) await vscode.commands.executeCommand('prereview.openDiff', file);
+        if (file) await vscode.commands.executeCommand('prereview.openDiff', file, { beside: true });
         return;
       }
       case 'sinceViewed': {
         const file = review.files.find((f) => f.path === message.path);
-        if (file) await vscode.commands.executeCommand('prereview.openSinceViewed', file);
+        if (file) await vscode.commands.executeCommand('prereview.openSinceViewed', file, { beside: true });
         return;
       }
       case 'viewed': {
@@ -224,6 +226,7 @@ export class Overview implements vscode.Disposable {
     }
     const { data } = review;
     return {
+      reviewId: review.filePath,
       title: data.title || review.title,
       titleFromAgent: !!data.title,
       base: data.base,

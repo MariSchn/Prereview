@@ -13,16 +13,25 @@
     updated: ['awaitingYou', 'Changed since you viewed it. Mark as viewed'],
   };
   const saved = vscode.getState() || { resolvedOpen: false };
-  const seen = new Set();
   const wide = matchMedia('(min-width: 1100px)');
+  // Everything below belongs to the review on show and is reset when another one is opened in the panel
+  let reviewId;
+  let seen = new Set();
+  let parts = new Map();
   let primed = false;
-  let scrolled = false;
   let jumps = 0;
-  let state = null;
   let editing = null;
-  let focusKey = null;
+  let focusTarget = null;
+  let filesFocus = null;
   const drafts = new Map();
+  let used = new Set();
+  let scrolled = false;
+  let state = null;
   let composing = false;
+  const live = document.createElement('div');
+  live.className = 'visually-hidden';
+  live.setAttribute('role', 'status');
+  document.body.append(live);
   const titleObserver = new IntersectionObserver(([entry]) => {
     scrolled = !entry.isIntersecting && entry.boundingClientRect.top < 0;
     app.querySelector('.topbar')?.classList.toggle('visible', scrolled);
@@ -34,10 +43,10 @@
     if (state) render();
   });
   window.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'state') {
-      state = event.data.state;
-      if (!composing) render();
-    }
+    if (event.data?.type !== 'state') return;
+    if (event.data.state.reviewId !== reviewId) reset(event.data.state.reviewId);
+    state = event.data.state;
+    if (!composing) render();
   });
   wide.addEventListener('change', () => state && render());
   vscode.postMessage({ type: 'ready' });
@@ -45,8 +54,39 @@
     for (const el of app.querySelectorAll('time[datetime]')) el.textContent = ago(el.getAttribute('datetime'));
   }, 30000);
 
+  // Another review in the same panel: nothing typed, seen or scrolled carries over
+  function reset(id) {
+    reviewId = id;
+    seen = new Set();
+    parts = new Map();
+    primed = false;
+    jumps = 0;
+    editing = null;
+    focusTarget = null;
+    filesFocus = null;
+    drafts.clear();
+    app.replaceChildren();
+    window.scrollTo(0, 0);
+  }
+
   function post(message) {
-    vscode.postMessage(message);
+    vscode.postMessage({ ...message, reviewId });
+  }
+
+  // Read out by screen readers, which don't notice changes elsewhere on the page
+  function announce(text) {
+    live.textContent = '';
+    setTimeout(() => (live.textContent = text), 100);
+  }
+
+  // Moves the keyboard focus to a control once the page shows the result of what the user did, for example after the
+  // thread it was in moved away, unless they moved the focus elsewhere first
+  function focusNext(key, reveal = true, done = () => true) {
+    focusTarget = { key, reveal, done, from: document.activeElement };
+  }
+
+  function threadOf(id) {
+    return state.threads.find((t) => t.id === id);
   }
 
   const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, form, input, button, textarea, select';
@@ -177,8 +217,8 @@
     return h('button', { class: kind, type: 'button', 'data-key': key, onclick }, iconName ? icon(iconName) : null, label);
   }
 
-  function iconButton(name, label, onclick, kind = '') {
-    return h('button', { class: `icon-button ${kind}`, type: 'button', title: label, 'aria-label': label, onclick }, icon(name));
+  function iconButton(name, label, onclick, kind = '', key) {
+    return h('button', { class: `icon-button ${kind}`, type: 'button', title: label, 'aria-label': label, 'data-key': key, onclick }, icon(name));
   }
 
   function keys(...names) {
@@ -247,19 +287,32 @@
     else area.setSelectionRange(inner, inner + selected.length);
   }
 
+
+  // One Tab stop for the whole bar; the arrow keys move between its buttons
   function toolbar(area) {
     const mod = MAC ? '⌘' : 'Ctrl+';
-    return h(
+    const bar = h(
       'span',
-      { class: 'toolbar' },
-      Object.entries(FORMATS).map(([name, f]) => {
+      { class: 'toolbar', role: 'toolbar', 'aria-label': 'Formatting' },
+      Object.entries(FORMATS).map(([name, f], i) => {
         const label = f.key ? `${f.label} (${mod}${f.key.toUpperCase()})` : f.label;
         const el = iconButton(name, label, () => format(area, name));
+        el.tabIndex = i ? -1 : 0;
         // Keep the focus and selection in the textarea.
         el.addEventListener('mousedown', (event) => event.preventDefault());
         return el;
       }),
     );
+    bar.addEventListener('keydown', (event) => {
+      const buttons = [...bar.children];
+      const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+      const next = step && buttons[buttons.indexOf(document.activeElement) + step];
+      if (!next) return;
+      event.preventDefault();
+      for (const b of buttons) b.tabIndex = b === next ? 0 : -1;
+      next.focus();
+    });
+    return bar;
   }
 
   function textarea(key, props, initial = '') {
@@ -289,29 +342,67 @@
     });
   }
 
+
+  // Reuses a part of the page while the data it shows is unchanged, so its scroll position, focus, selection
+  // and open <details> survive updates
+  function part(key, data, build) {
+    used.add(key);
+    const sig = JSON.stringify(data);
+    const known = parts.get(key);
+    if (known && known.sig === sig) return known.el;
+    const el = build();
+    parts.set(key, { sig, el });
+    return el;
+  }
+
+  // Puts children in order, moving only the ones that are out of place, as a node that moves loses its focus and the
+  // scroll positions inside it. Removing the old children first keeps the ones after them where they are.
+  function place(parent, children) {
+    children = children.filter(Boolean);
+    const keep = new Set(children);
+    for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
+    children.forEach((child, i) => {
+      if (parent.childNodes[i] !== child) parent.insertBefore(child, parent.childNodes[i] ?? null);
+    });
+    return parent;
+  }
+
   function render() {
+    for (const area of app.querySelectorAll('textarea[data-key]')) drafts.set(area.dataset.key, area.value);
     const active = document.activeElement;
-    let focused = active instanceof HTMLElement && active.dataset.key ? { key: active.dataset.key } : null;
-    for (const area of app.querySelectorAll('textarea[data-key]')) {
-      const key = area.getAttribute('data-key');
-      drafts.set(key, area.value);
-      if (area === document.activeElement) focused = { key, start: area.selectionStart, end: area.selectionEnd };
-    }
+    const focused = active instanceof HTMLElement && app.contains(active) && active.dataset.key ? active : null;
+    const typing = focused instanceof HTMLTextAreaElement ? { start: focused.selectionStart, end: focused.selectionEnd } : null;
     const before = new Map();
     for (const el of app.querySelectorAll('[data-flip]')) {
       const rect = el.getBoundingClientRect();
       if (rect.height) before.set(el.dataset.flip, rect.top);
     }
+    const replies = primed ? state.threads.filter((t) => t.comments.some((c) => !c.mine && !seen.has(`${t.id}:${c.id}`))) : [];
     const animate = primed && !reduceMotion();
-    const content = h('div', { class: 'content' }, fileProblem(), changesProblem(), description(), ...groups(), state.files.length ? newComment() : null);
-    app.replaceChildren(
-      topbar(),
-      header(),
-      h('div', { class: 'layout' }, wide.matches ? [content, rail()] : [statusCard(), content, filesCard()]),
-    );
+    used = new Set();
+
+    const content = place(part('content', 0, () => h('div', { class: 'content' })), [
+      fileProblem(),
+      changesProblem(),
+      description(),
+      ...groups(),
+      state.files.length ? composer() : null,
+    ]);
+    const layout = part('layout', wide.matches, () => h('div', { class: 'layout' }));
+    if (wide.matches) {
+      // The rail comes first, so the keyboard reaches the status and files before the threads
+      const rail = place(part('rail', 0, () => h('aside', { class: 'rail', 'aria-label': 'Status and files' })), [statusCard(), filesCard()]);
+      place(layout, [rail.childNodes.length ? rail : null, content]);
+    } else {
+      place(layout, [statusCard(), content, filesCard()]);
+    }
+    place(app, [topbar(), header(), layout]);
+    for (const key of parts.keys()) if (!used.has(key)) parts.delete(key);
     primed = true;
     titleObserver.disconnect();
     titleObserver.observe(app.querySelector('.title'));
+    app.querySelector('.topbar').classList.toggle('visible', scrolled);
+
     if (animate) {
       for (const el of app.querySelectorAll('[data-flip]')) {
         const rect = el.getBoundingClientRect();
@@ -324,87 +415,106 @@
         }
       }
     }
+    // Text boxes that were rebuilt get back what was typed in them
     for (const area of app.querySelectorAll('textarea[data-key]')) {
-      const key = area.getAttribute('data-key');
-      if (drafts.has(key)) {
-        area.value = drafts.get(key);
+      const draft = drafts.get(area.dataset.key);
+      if (draft !== undefined && area.value !== draft) {
+        area.value = draft;
         area.dispatchEvent(new Event('input'));
       }
     }
-    const target = focusKey ? { key: focusKey } : focused;
-    focusKey = null;
-    if (target) {
-      const el = app.querySelector(`[data-key="${CSS.escape(target.key)}"]`);
-      if (el) {
-        el.focus();
-        if (target.start !== undefined) el.setSelectionRange(target.start, target.end);
-      }
+    updateFileStops();
+    const from = focusTarget?.from;
+    const moved = focusTarget && active !== from && !(active?.dataset?.key && active.dataset.key === from?.dataset?.key);
+    const wanted = focusTarget && !moved && focusTarget.done() ? focusTarget : null;
+    if (moved || wanted) focusTarget = null;
+    const target = wanted && app.querySelector(`[data-key="${CSS.escape(wanted.key)}"]`);
+    if (target && target !== document.activeElement) {
+      target.focus({ preventScroll: true });
+      if (wanted.reveal) target.scrollIntoView({ block: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
+    } else if (focused && document.activeElement !== focused) {
+      // The control that had the focus was moved or rebuilt: focus it or its new copy, without scrolling the page to it
+      const copy = focused.isConnected ? focused : app.querySelector(`[data-key="${CSS.escape(focused.dataset.key)}"]`);
+      copy?.focus({ preventScroll: true });
+      if (copy && typing) copy.setSelectionRange(typing.start, typing.end);
+    }
+    if (replies.length) {
+      const where = replies.length === 1 ? (replies[0].file ? ` on ${replies[0].file}` : ' to a general comment') : ` in ${replies.length} threads`;
+      announce(`The agent replied${where}.`);
     }
   }
 
   function header() {
     const s = state;
-    return h(
-      'header',
-      { class: 'header' },
+    const data = [s.title, s.titleFromAgent, s.base, s.target, s.worktree, s.files.length, s.added, s.deleted, !!s.changesError, s.threads.length];
+    return part('header', data, () =>
       h(
-        'div',
-        { class: 'header-top' },
-        h('h1', { class: s.titleFromAgent ? 'title' : 'title untitled' }, s.title),
+        'header',
+        { class: 'header' },
         h(
           'div',
-          { class: 'actions' },
-          button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
-          s.files.length ? button('Open all changes', 'secondary', command('openAllChanges'), 'diff') : null,
-          copyButton('primary'),
+          { class: 'header-top' },
+          h('h1', { class: s.titleFromAgent ? 'title' : 'title untitled' }, s.title),
+          h(
+            'div',
+            { class: 'actions' },
+            s.files.length ? button('Open all changes', 'secondary', command('openAllChanges'), 'diff') : null,
+            copyButton('primary', 'copy:header'),
+            button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
+          ),
         ),
-      ),
-      h(
-        'div',
-        { class: 'meta' },
-        s.titleFromAgent
-          ? h(
-              'span',
-              { class: 'branches' },
-              h('code', { class: 'branch', title: 'Base' }, icon('branch'), s.base),
-              icon('arrow', 'into'),
-              h('code', { class: 'branch', title: 'Under review' }, icon('branch'), s.target),
-            )
-          : null,
-        s.worktree ? h('span', { class: 'meta-item', title: `Checked out in ${s.worktree}` }, icon('worktree'), 'In worktree') : null,
-        s.files.length
-          ? [
-              h('span', { class: 'meta-item' }, icon('file'), plural(s.files.length, 'file')),
-              h(
+        h(
+          'div',
+          { class: 'meta' },
+          s.titleFromAgent
+            ? h(
                 'span',
-                { class: 'meta-item diffstat', title: `${s.added} added, ${s.deleted} deleted` },
-                h('span', { class: 'added' }, `+${s.added}`),
-                h('span', { class: 'deleted' }, `−${s.deleted}`),
-                diffBlocks(s.added, s.deleted),
-              ),
-            ]
-          : s.changesError
-            ? null
-            : s.threads.length
-              ? h('span', { class: 'meta-item' }, 'No file changes')
-              : h('span', { class: 'meta-item in-sync' }, icon('check'), 'In sync'),
+                { class: 'branches' },
+                h('code', { class: 'branch', title: 'Base' }, icon('branch'), s.base),
+                icon('arrow', 'into'),
+                h('code', { class: 'branch', title: 'Under review' }, icon('branch'), s.target),
+              )
+            : null,
+          s.worktree ? h('span', { class: 'meta-item', title: `Checked out in ${s.worktree}` }, icon('worktree'), 'In worktree') : null,
+          s.files.length
+            ? [
+                h('span', { class: 'meta-item' }, icon('file'), plural(s.files.length, 'file')),
+                h(
+                  'span',
+                  { class: 'meta-item diffstat', title: `${s.added} added, ${s.deleted} deleted` },
+                  h('span', { class: 'added' }, `+${s.added}`),
+                  h('span', { class: 'deleted' }, `−${s.deleted}`),
+                  diffBlocks(s.added, s.deleted),
+                ),
+              ]
+            : s.changesError
+              ? null
+              : s.threads.length
+                ? h('span', { class: 'meta-item' }, 'No file changes')
+                : h('span', { class: 'meta-item in-sync' }, icon('check'), 'In sync'),
+        ),
       ),
     );
   }
 
-  function copyButton(kind) {
+  function copyButton(kind, key) {
     let reset;
     const el = button(
       'Copy path for agent',
       kind,
       () => {
         post({ type: 'copyPath' });
+        announce('Review path copied.');
         el.style.minWidth = `${el.offsetWidth}px`;
         el.replaceChildren(icon('check'), 'Copied');
         clearTimeout(reset);
-        reset = setTimeout(() => el.replaceChildren(icon('copy'), 'Copy path for agent'), 1600);
+        reset = setTimeout(() => {
+          el.style.minWidth = '';
+          el.replaceChildren(icon('copy'), 'Copy path for agent');
+        }, 1600);
       },
       'copy',
+      key,
     );
     return el;
   }
@@ -412,20 +522,24 @@
   function status() {
     const { counts, threads } = state;
     if (counts.awaitingYou) {
-      const waiting = threads.filter((t) => t.status === 'awaitingYou');
+      const waiting = threads.filter((t) => t.status === 'awaitingYou').map((t) => t.id);
       const text = `${plural(counts.awaitingYou, 'thread')} ${counts.awaitingYou === 1 ? 'needs' : 'need'} your reply.`;
-      return ['awaitingYou', 'Your turn', text, () => button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length].id))];
+      return ['awaitingYou', 'Your turn', text, waiting];
     }
-    if (counts.awaitingAgent) return ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.', () => copyButton('secondary')];
-    if (counts.resolved) {
-      return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.', () => button('Finish review', 'secondary', command('finishReview'), 'finish')];
-    }
+    if (counts.awaitingAgent) return ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.'];
+    if (counts.resolved) return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.'];
     if (!state.files.length && !state.threads.length) {
-      return state.changesError
-        ? ['idle', "Couldn't load the changes", state.changesError, () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')]
-        : ['resolved', 'In sync', 'The two sides match.', () => button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')];
+      return state.changesError ? ['idle', "Couldn't load the changes", state.changesError] : ['resolved', 'In sync', 'The two sides match.'];
     }
-    return ['idle', 'Ready for review', 'Open the changes and comment on any line.', () => button('Open all changes', 'secondary', command('openAllChanges'), 'diff')];
+    return ['idle', 'Ready for review', 'Open the changes and comment on any line.'];
+  }
+
+  function statusAction(tone, waiting) {
+    if (waiting) return button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length]), null, 'go-to-thread');
+    if (tone === 'awaitingAgent') return copyButton('secondary', 'copy:status');
+    if (tone === 'resolved' && state.threads.length) return button('Finish review', 'secondary', command('finishReview'), 'finish');
+    if (!state.files.length) return button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh');
+    return button('Open all changes', 'secondary', command('openAllChanges'), 'diff');
   }
 
   function statusIcon(tone) {
@@ -434,79 +548,69 @@
 
   function topbar() {
     const [tone, title] = status();
-    return h(
-      'div',
-      { class: `topbar${scrolled ? ' visible' : ''}` },
+    return part('topbar', [tone, title, state.title], () =>
       h(
         'div',
-        { class: 'topbar-inner' },
-        h('span', { class: `topbar-status ${tone}` }, statusIcon(tone), title),
-        h('span', { class: 'topbar-title' }, state.title),
-        copyButton('primary'),
+        { class: 'topbar' },
+        h(
+          'div',
+          { class: 'topbar-inner' },
+          h('span', { class: `topbar-status ${tone}` }, statusIcon(tone), title),
+          h('span', { class: 'topbar-title' }, state.title),
+          copyButton('primary', 'copy:topbar'),
+        ),
       ),
     );
-  }
-
-  function rail() {
-    const card = statusCard();
-    const files = filesCard();
-    if (!card && !files) return null;
-    return h('aside', { class: 'rail' }, card, files);
   }
 
   function statusCard() {
     if (!state.files.length && !state.threads.length) return null;
     const { counts, threads, files } = state;
-    const [tone, title, text, action] = status();
+    const [tone, title, text, waiting] = status();
     const viewed = files.filter((f) => f.viewed === 'viewed').length;
     const updated = files.filter((f) => f.viewed === 'updated').length;
-    return h(
-      'section',
-      { class: `card status-card ${tone}` },
+    const data = [tone, title, text, waiting, counts, threads.length, files.length, viewed, updated];
+    return part('status', data, () =>
       h(
-        'div',
-        { class: 'status-main' },
-        h('span', { class: 'status-icon' }, statusIcon(tone)),
-        h('div', { class: 'status-text' }, h('strong', {}, title), h('span', { class: 'muted' }, text)),
+        'section',
+        { class: `card status-card ${tone}`, 'aria-label': 'Review status' },
+        h(
+          'div',
+          { class: 'status-main' },
+          h('span', { class: 'status-icon' }, statusIcon(tone)),
+          h('div', { class: 'status-text' }, h('strong', {}, title), h('span', { class: 'muted' }, text)),
+        ),
+        h('div', { class: 'status-action' }, statusAction(tone, waiting)),
+        threads.length || files.length
+          ? h(
+              'div',
+              { class: 'meters' },
+              threads.length
+                ? meter('Threads', `${counts.resolved} of ${threads.length} resolved`, [
+                    [counts.resolved, 'resolved', 'Resolved'],
+                    [counts.awaitingAgent, 'awaitingAgent', 'Awaiting agent'],
+                    [counts.awaitingYou, 'awaitingYou', 'Awaiting you'],
+                  ])
+                : null,
+              files.length
+                ? meter('Files viewed', `${viewed} of ${files.length}`, [
+                    [viewed, 'resolved', 'Viewed'],
+                    [updated, 'awaitingYou', 'Changed since viewed'],
+                    [files.length - viewed - updated, 'rest', 'Not viewed'],
+                  ])
+                : null,
+            )
+          : null,
+        updated
+          ? h(
+              'button',
+              { class: 'plain since-viewed', type: 'button', 'data-key': 'since-viewed', onclick: () => post({ type: 'command', name: 'openAllSinceViewed' }) },
+              icon('history'),
+              h('span', {}, `${plural(updated, 'file')} changed since you viewed ${updated === 1 ? 'it' : 'them'}`),
+              h('span', { class: 'since-viewed-action' }, 'Show changes'),
+            )
+          : null,
       ),
-      h('div', { class: 'status-action' }, action()),
-      threads.length || files.length
-        ? h(
-            'div',
-            { class: 'meters' },
-            threads.length
-              ? meter('Threads', `${counts.resolved} of ${threads.length} resolved`, [
-                  [counts.resolved, 'resolved', 'Resolved'],
-                  [counts.awaitingAgent, 'awaitingAgent', 'Awaiting agent'],
-                  [counts.awaitingYou, 'awaitingYou', 'Awaiting you'],
-                ])
-              : null,
-            files.length
-              ? meter('Files viewed', `${viewed} of ${files.length}`, [
-                  [viewed, 'resolved', 'Viewed'],
-                  [updated, 'awaitingYou', 'Changed since viewed'],
-                  [files.length - viewed - updated, 'rest', 'Not viewed'],
-                ])
-              : null,
-          )
-        : null,
-      updated
-        ? h(
-            'a',
-            {
-              class: 'since-viewed',
-              href: '#',
-              'data-key': 'since-viewed',
-              onclick: (event) => {
-                event.preventDefault();
-                post({ type: 'command', name: 'openAllSinceViewed' });
-              },
-            },
-            icon('history'),
-            h('span', {}, `${plural(updated, 'file')} changed since you viewed ${updated === 1 ? 'it' : 'them'}`),
-            h('span', { class: 'since-viewed-action' }, 'Show changes'),
-          )
-        : null,
     );
   }
 
@@ -542,9 +646,16 @@
   function filesCard() {
     if (!state.files.length) return null;
     const updated = state.files.some((f) => f.viewed === 'updated');
-    return h(
-      'section',
-      { class: 'card files-card' },
+    const card = part('files', 0, () => {
+      const list = h('ul', { class: 'file-list', 'aria-label': 'Changed files' });
+      list.addEventListener('keydown', moveInFiles);
+      list.addEventListener('focusin', (event) => {
+        filesFocus = event.target.dataset.key ?? filesFocus;
+        updateFileStops();
+      });
+      return h('section', { class: 'card files-card', 'aria-label': 'Files' }, h('div'), list);
+    });
+    const head = part('files-head', [state.files.length, updated], () =>
       h(
         'div',
         { class: 'card-head' },
@@ -554,13 +665,49 @@
         updated ? iconButton('history', 'Open all changes since viewed', command('openAllSinceViewed')) : null,
         iconButton('diff', 'Open all changes', command('openAllChanges')),
       ),
-      h('ul', { class: `file-list${updated ? ' has-updated' : ''}` }, state.files.map(fileRow)),
     );
+    const list = card.lastChild;
+    list.classList.toggle('has-updated', updated);
+    place(card, [head, list]);
+    place(
+      list,
+      state.files.map((f) => part(`file:${f.path}`, f, () => fileRow(f))),
+    );
+    return card;
+  }
+
+  // The file list is one Tab stop: up and down move between files, left and right between a file's controls
+  function moveInFiles(event) {
+    const rows = [...event.currentTarget.children];
+    const row = rows.find((r) => r.contains(document.activeElement));
+    if (!row) return;
+    const controls = (r) => [...r.querySelectorAll('button')];
+    const column = controls(row).indexOf(document.activeElement);
+    const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+    let next;
+    if (step) {
+      const other = rows[rows.indexOf(row) + step];
+      next = other && controls(other)[Math.min(column, controls(other).length - 1)];
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      next = controls(row)[column + (event.key === 'ArrowRight' ? 1 : -1)];
+    } else if (event.key === 'Home' || event.key === 'End') {
+      next = controls(rows[event.key === 'Home' ? 0 : rows.length - 1])[0];
+    }
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+  }
+
+  function updateFileStops() {
+    const buttons = [...app.querySelectorAll('.file-list button')];
+    const current = buttons.find((b) => b.dataset.key === filesFocus) ?? buttons.find((b) => b.classList.contains('file-link'));
+    for (const b of buttons) b.tabIndex = b === current ? 0 : -1;
   }
 
   function fileRow(f) {
-    const [iconName, label] = VIEWED[f.viewed];
+    const [iconName, title] = VIEWED[f.viewed];
     const slash = f.path.lastIndexOf('/');
+    const label = `Viewed: ${f.path}${f.viewed === 'updated' ? ', changed since you viewed it' : ''}`;
     return h(
       'li',
       { class: `file-row ${f.viewed}` },
@@ -569,7 +716,7 @@
         {
           class: 'view-toggle',
           type: 'button',
-          title: label,
+          title,
           'aria-label': label,
           'aria-pressed': f.viewed === 'viewed' ? 'true' : 'false',
           'data-key': `viewed:${f.path}`,
@@ -578,16 +725,14 @@
         icon(iconName),
       ),
       h(
-        'a',
+        'button',
         {
-          class: 'file-link',
-          href: '#',
+          class: 'plain file-link',
+          type: 'button',
           title: f.status === 'R' ? `${f.oldPath} → ${f.path}` : f.path,
+          'aria-label': `${f.path}, ${FILE_STATUS[f.status].toLowerCase()}${f.open ? `, ${plural(f.open, 'open thread')}` : ''}`,
           'data-key': `file:${f.path}`,
-          onclick: (event) => {
-            event.preventDefault();
-            post({ type: 'openFile', path: f.path });
-          },
+          onclick: () => post({ type: 'openFile', path: f.path }),
         },
         h(
           'span',
@@ -601,80 +746,90 @@
         h('span', { class: `file-status ${f.status}`, title: FILE_STATUS[f.status] }, f.status),
       ),
       f.viewed === 'updated'
-        ? iconButton('history', 'Open changes since viewed', () => post({ type: 'sinceViewed', path: f.path }), 'since-viewed-file')
+        ? iconButton('history', 'Open changes since viewed', () => post({ type: 'sinceViewed', path: f.path }), 'since-viewed-file', `since:${f.path}`)
         : h('span'),
     );
   }
 
   function fileProblem() {
     if (!state.fileError && !state.unreadable) return null;
-    return h(
-      'div',
-      { class: 'notice', 'data-flip': 'file-error' },
-      h('strong', {}, state.fileError ? "The review file can't be read" : `${plural(state.unreadable, 'thread')} in the review file can't be read`),
+    return part('file-problem', [state.fileError, state.unreadable], () =>
       h(
-        'span',
-        { class: 'muted' },
-        state.fileError
-          ? `${state.fileError} Your comments can't be saved until it is fixed. The agent may still be writing it.`
-          : 'They have no comment text Prereview can read, so they are not shown here. They stay in the file.',
+        'div',
+        { class: 'notice', role: 'alert', 'data-flip': 'file-error' },
+        h('strong', {}, state.fileError ? "The review file can't be read" : `${plural(state.unreadable, 'thread')} in the review file can't be read`),
+        h(
+          'span',
+          { class: 'muted' },
+          state.fileError
+            ? `${state.fileError} Your comments can't be saved until it is fixed. The agent may still be writing it.`
+            : 'They have no comment text Prereview can read, so they are not shown here. They stay in the file.',
+        ),
+        h('div', { class: 'empty-actions' }, button('Open review file', 'secondary', () => post({ type: 'openReviewFile' }), 'file')),
       ),
-      h('div', { class: 'empty-actions' }, button('Open review file', 'secondary', () => post({ type: 'openReviewFile' }), 'file')),
     );
   }
 
   function changesProblem() {
     if (!state.changesError) return null;
-    return h(
-      'div',
-      { class: state.threads.length ? 'notice' : 'empty-state error', 'data-flip': 'error' },
-      h('strong', {}, "Couldn't load the changes"),
-      h('span', { class: 'muted' }, state.changesError),
-      h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
+    return part('changes-problem', [state.changesError, state.threads.length > 0], () =>
+      h(
+        'div',
+        { class: state.threads.length ? 'notice' : 'empty-state error', 'data-flip': 'error' },
+        h('strong', {}, "Couldn't load the changes"),
+        h('span', { class: 'muted' }, state.changesError),
+        h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
+      ),
     );
   }
 
   function description() {
     if (!state.description && !state.files.length && !state.threads.length) return null;
-    return h(
-      'section',
-      { class: state.description ? 'card description' : 'card description pending' },
+    return part('description', state.description ?? '', () =>
       h(
-        'div',
-        { class: 'card-head' },
-        avatar(false, true),
-        h('span', { class: 'author' }, 'Agent'),
-        h('span', { class: 'muted' }, state.description ? 'wrote a description' : 'adds a title and description when it picks up the review'),
+        'section',
+        { class: state.description ? 'card description' : 'card description pending', 'aria-label': 'Description' },
+        h(
+          'div',
+          { class: 'card-head' },
+          avatar(false, true),
+          h('span', { class: 'author' }, 'Agent'),
+          h('span', { class: 'muted' }, state.description ? 'wrote a description' : 'adds a title and description when it picks up the review'),
+        ),
+        state.description ? h('div', { class: 'card-body markdown', html: state.description }) : null,
       ),
-      state.description ? h('div', { class: 'card-body markdown', html: state.description }) : null,
     );
   }
 
   function emptyComments() {
-    return h(
-      'div',
-      { class: 'empty-state', 'data-flip': 'empty' },
-      emptyArt(),
-      h('strong', {}, 'No comments yet'),
-      h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
+    return part('empty', 0, () =>
+      h(
+        'div',
+        { class: 'empty-state', 'data-flip': 'empty' },
+        emptyArt(),
+        h('strong', {}, 'No comments yet'),
+        h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
+      ),
     );
   }
 
   function cleanState() {
-    return h(
-      'div',
-      { class: 'empty-state clean', 'data-flip': 'empty' },
-      cleanArt(),
-      h('strong', {}, 'No changes'),
+    return part('clean', [state.base, state.target], () =>
       h(
-        'span',
-        { class: 'clean-pair' },
-        h('code', { class: 'branch' }, icon('branch'), state.base),
-        icon('arrow', 'into'),
-        h('code', { class: 'branch' }, icon('branch'), state.target),
+        'div',
+        { class: 'empty-state clean', 'data-flip': 'empty' },
+        cleanArt(),
+        h('strong', {}, 'No changes'),
+        h(
+          'span',
+          { class: 'clean-pair' },
+          h('code', { class: 'branch' }, icon('branch'), state.base),
+          icon('arrow', 'into'),
+          h('code', { class: 'branch' }, icon('branch'), state.target),
+        ),
+        h('span', { class: 'muted' }, 'These two match, so there is nothing to comment on yet.'),
+        h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
       ),
-      h('span', { class: 'muted' }, 'These two match, so there is nothing to comment on yet.'),
-      h('div', { class: 'empty-actions' }, button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh')),
     );
   }
 
@@ -683,54 +838,66 @@
     return GROUPS.map(([status, label]) => {
       const threads = state.threads.filter((t) => t.status === status);
       if (!threads.length) return null;
-      const collapsible = status === 'resolved';
-      const heading = h(
-        'h2',
-        { class: `group-head ${status}`, 'data-flip': `group:${status}` },
-        icon(status),
-        h('span', {}, label),
-        h('span', { class: 'count' }, threads.length),
-        h('span', { class: 'rule' }),
-        collapsible ? icon('chevron', 'toggle') : null,
-      );
-      if (!collapsible) return h('section', { class: 'group' }, heading, threads.map(thread));
-      return h(
-        'details',
-        {
+      const heading = () =>
+        h(
+          'h2',
+          { class: `group-head ${status}`, 'data-flip': `group:${status}` },
+          icon(status),
+          h('span', {}, label),
+          h('span', { class: 'count' }, threads.length),
+          h('span', { class: 'rule' }),
+          status === 'resolved' ? icon('chevron', 'toggle') : null,
+        );
+      if (status !== 'resolved') {
+        const group = part(`group:${status}`, 0, () => h('section', { class: 'group', 'aria-label': label }));
+        return place(group, [part(`group-head:${status}`, threads.length, heading), ...threads.map(thread)]);
+      }
+      const group = part('group:resolved', 0, () =>
+        h('details', {
           class: 'group',
           open: saved.resolvedOpen,
           ontoggle: (event) => {
             saved.resolvedOpen = event.target.open;
             vscode.setState(saved);
           },
-        },
-        h('summary', { 'data-key': 'resolved' }, heading),
-        threads.map(thread),
+        }),
       );
+      const summary = part('group-head:resolved', threads.length, () => h('summary', { 'data-key': 'resolved' }, heading()));
+      return place(group, [summary, ...threads.map(thread)]);
     });
   }
 
+  // The control that leads a thread, for moving the focus to it
+  function leadKey(t) {
+    return t.file ? `open:${t.id}` : `resolve:${t.id}`;
+  }
+
+  // After a thread leaves the place it was in, the focus goes to the thread after it
+  function focusAfter(t, done) {
+    const shown = [...app.querySelectorAll('.thread')].filter((card) => card.offsetParent !== null).map((card) => card.dataset.id);
+    const i = shown.indexOf(t.id);
+    const next = threadOf(shown[i + 1] ?? shown[i - 1]);
+    focusNext(next ? leadKey(next) : 'new', true, done);
+  }
+
   function thread(t) {
+    const editingId = editing && editing.id === t.id ? editing.commentId : null;
+    return part(`thread:${t.id}`, [t, editingId], () => buildThread(t));
+  }
+
+  function buildThread(t) {
     const resolved = t.status === 'resolved';
+    const where = t.file ? `${t.file}${t.where ? `, ${t.where}` : ''}` : 'General comment';
     return h(
       'article',
-      { class: `card thread ${t.status}`, 'data-id': t.id, 'data-flip': `${t.id}:${t.status}` },
+      { class: `card thread ${t.status}`, 'data-id': t.id, 'data-flip': `${t.id}:${t.status}`, 'aria-label': `${where}, ${t.status === 'awaitingYou' ? 'awaiting you' : t.status === 'awaitingAgent' ? 'awaiting agent' : 'resolved'}` },
       h(
         'div',
         { class: 'card-head' },
         t.file
           ? h(
-              'a',
-              {
-                class: 'location',
-                href: '#',
-                title: 'Open in diff',
-                'data-key': `open:${t.id}:${t.status}`,
-                onclick: (event) => {
-                  event.preventDefault();
-                  post({ type: 'open', id: t.id });
-                },
-              },
+              'button',
+              { class: 'plain location', type: 'button', title: 'Open in diff', 'data-key': `open:${t.id}`, onclick: () => post({ type: 'open', id: t.id }) },
               icon('file', 'kind'),
               filePath(t.file),
             )
@@ -745,9 +912,14 @@
           button(
             resolved ? 'Reopen' : 'Resolve',
             'ghost',
-            () => post({ type: 'resolve', id: t.id, resolved: !resolved }),
+            () => {
+              const done = () => (threadOf(t.id)?.status === 'resolved') !== resolved;
+              if (resolved) focusNext(`resolve:${t.id}`, true, done);
+              else focusAfter(t, done);
+              post({ type: 'resolve', id: t.id, resolved: !resolved });
+            },
             resolved ? 'reopen' : 'check',
-            `resolve:${t.id}:${t.status}`,
+            `resolve:${t.id}`,
           ),
         ),
       ),
@@ -765,7 +937,7 @@
             )
           : null,
       ),
-      replyBox(t),
+      replyBox(t, where),
     );
   }
 
@@ -805,14 +977,31 @@
                 'span',
                 { class: 'comment-actions' },
                 c.mine
-                  ? iconButton('edit', 'Edit', () => {
-                      editing = { id: t.id, commentId: c.id };
-                      focusKey = `edit:${t.id}:${c.id}`;
-                      drafts.delete(focusKey);
-                      render();
-                    })
+                  ? iconButton(
+                      'edit',
+                      'Edit',
+                      () => {
+                        editing = { id: t.id, commentId: c.id };
+                        focusNext(`edit:${t.id}:${c.id}`, false);
+                        drafts.delete(`edit:${t.id}:${c.id}`);
+                        render();
+                      },
+                      '',
+                      `edit-button:${t.id}:${c.id}`,
+                    )
                   : null,
-                iconButton('trash', 'Delete', () => post({ type: 'delete', id: t.id, commentId: c.id }), 'danger'),
+                iconButton(
+                  'trash',
+                  'Delete',
+                  () => {
+                    const done = () => !threadOf(t.id)?.comments.some((x) => x.id === c.id);
+                    if (t.comments.length === 1) focusAfter(t, done);
+                    else focusNext(`reply:${t.id}`, false, done);
+                    post({ type: 'delete', id: t.id, commentId: c.id });
+                  },
+                  'danger',
+                  `delete:${t.id}:${c.id}`,
+                ),
               ),
         ),
         isEditing ? editBox(t, c) : h('div', { class: 'markdown', html: c.html }),
@@ -821,16 +1010,20 @@
   }
 
   function editBox(t, c) {
-    const area = textarea(`edit:${t.id}:${c.id}`, { rows: 4 }, c.body);
-    const cancel = () => {
+    const area = textarea(`edit:${t.id}:${c.id}`, { rows: 4, 'aria-label': 'Edit your comment' }, c.body);
+    const done = () => {
       editing = null;
+      focusNext(`edit-button:${t.id}:${c.id}`, false);
+    };
+    const cancel = () => {
+      done();
       render();
     };
     const save = () => {
       const body = area.value.trim();
       if (!body) return;
       post({ type: 'edit', id: t.id, commentId: c.id, body });
-      editing = null;
+      done();
       // An unchanged comment brings no new state, so leave edit mode here
       render();
     };
@@ -846,12 +1039,15 @@
     );
   }
 
-  function replyBox(t) {
-    const area = textarea(`reply:${t.id}`, { class: 'reply', rows: 1, placeholder: 'Reply…' });
+  function replyBox(t, where) {
+    const area = textarea(`reply:${t.id}`, { class: 'reply', rows: 1, placeholder: 'Reply…', 'aria-label': `Reply to ${where}` });
     const canResolve = t.status !== 'resolved';
     const send = (resolve) => {
       const body = area.value.trim();
       if (!body) return;
+      const done = () => threadOf(t.id)?.comments.length !== t.comments.length;
+      if (resolve) focusAfter(t, done);
+      else focusNext(`reply:${t.id}`, false, done);
       post({ type: 'reply', id: t.id, body, resolve });
       area.value = '';
       area.dispatchEvent(new Event('input'));
@@ -862,7 +1058,7 @@
         send(canResolve && event.shiftKey);
       }
     });
-    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check') : null;
+    const resolveButton = canResolve ? button('Reply and resolve', 'secondary', () => send(true), 'check', `reply-resolve:${t.id}`) : null;
     resolveButton?.setAttribute('title', `${MAC ? '⇧⌘' : 'Ctrl+Shift+'}Enter`);
     return h(
       'div',
@@ -884,32 +1080,34 @@
     );
   }
 
-  function newComment() {
-    const area = textarea('new', { rows: 3, placeholder: 'Leave a general comment for the agent…' });
-    const send = () => {
-      const body = area.value.trim();
-      if (!body) return;
-      post({ type: 'comment', body });
-      area.value = '';
-      area.dispatchEvent(new Event('input'));
-    };
-    onSubmit(area, send);
-    return h(
-      'section',
-      { class: 'new-comment', 'data-flip': 'composer' },
-      avatar(true),
-      h(
-        'div',
-        { class: 'composer' },
-        area,
+  function composer() {
+    return part('composer', 0, () => {
+      const area = textarea('new', { rows: 3, placeholder: 'Leave a general comment for the agent…', 'aria-label': 'General comment for the agent' });
+      const send = () => {
+        const body = area.value.trim();
+        if (!body) return;
+        post({ type: 'comment', body });
+        area.value = '';
+        area.dispatchEvent(new Event('input'));
+      };
+      onSubmit(area, send);
+      return h(
+        'section',
+        { class: 'new-comment', 'data-flip': 'composer' },
+        avatar(true),
         h(
           'div',
-          { class: 'composer-foot' },
-          toolbar(area),
-          h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'),
-          button('Comment', 'primary', send),
+          { class: 'composer' },
+          area,
+          h(
+            'div',
+            { class: 'composer-foot' },
+            toolbar(area),
+            h('span', { class: 'hint' }, keys(MAC ? '⌘' : 'Ctrl', 'Enter'), ' to send'),
+            button('Comment', 'primary', send),
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 })();
