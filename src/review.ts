@@ -281,7 +281,7 @@ export class Review implements vscode.Disposable {
   syncLines(): Promise<void> {
     const moved = this.data.threads.some((t) => {
       const pos = this.positions.get(t.id);
-      return pos && t.startLine !== undefined && (pos.start !== t.startLine || pos.end !== t.endLine);
+      return pos && t.startLine !== undefined && !this.unsaved(t) && (pos.start !== t.startLine || pos.end !== t.endLine);
     });
     return moved && !this.fileError ? this.update(() => undefined) : Promise.resolve();
   }
@@ -504,12 +504,22 @@ export class Review implements vscode.Disposable {
   // Writes the lines each thread is on now, and the code of threads the agent opened without it
   private keepLines(doc: ReviewDocument): void {
     for (const t of doc.data.threads) {
-      if (!t.file || t.startLine === undefined) continue;
+      if (!t.file || t.startLine === undefined || this.unsaved(t)) continue;
       const pos = this.positions.get(t.id);
       if (pos && (pos.start !== t.startLine || pos.end !== t.endLine)) doc.setLines(t.id, pos.start, pos.end);
       const lines = this.sources.get(sourceKey(t.file, t.side))?.lines;
-      if (t.snippet === undefined && lines) doc.setSnippet(t.id, lines.slice((pos?.start ?? t.startLine) - 1, pos?.end ?? t.endLine).join('\n'));
+      const start = pos?.start ?? t.startLine;
+      if (t.snippet === undefined && lines && start <= lines.length && !pos?.outdated) {
+        doc.setSnippet(t.id, lines.slice(start - 1, pos?.end ?? t.endLine).join('\n'));
+      }
     }
+  }
+
+  // The agent reads the file on disk, so lines in a file with unsaved edits would point it at the wrong code
+  private unsaved(t: Thread): boolean {
+    if (t.side === 'base' || !t.file || !this.targetDir) return false;
+    const uri = vscode.Uri.file(path.join(this.targetDir, t.file)).toString();
+    return vscode.workspace.textDocuments.some((d) => d.isDirty && d.uri.toString() === uri);
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -590,14 +600,21 @@ export class Review implements vscode.Disposable {
     const stored = hint ? { start: hint[0], end: hint[1] } : { start: t.startLine!, end: t.endLine ?? t.startLine! };
     if (!after) return { ...(known ?? stored), outdated: true };
     const snippet = t.snippet?.split('\n');
+    let pos: Position;
     if (known && before) {
       if (before.text === after.text) return known;
       const moved = follow(before.lines, after.lines, known, snippet);
-      return { start: moved.start, end: moved.end, outdated: moved.lost || (!!snippet && !matchesAt(after.lines, moved.start, snippet)) };
+      pos = { start: moved.start, end: moved.end, outdated: moved.lost || (!!snippet && !matchesAt(after.lines, moved.start, snippet)) };
+    } else if (t.snippet === undefined) {
+      pos = { ...stored, outdated: false };
+    } else {
+      const found = locate(after.lines, t.snippet, stored.start);
+      pos = found ? { start: found.start, end: found.end, outdated: found.ambiguous } : { ...stored, outdated: true };
     }
-    if (t.snippet === undefined) return { ...stored, outdated: false };
-    const found = locate(after.lines, t.snippet, stored.start);
-    return found ? { start: found.start, end: found.end, outdated: found.ambiguous } : { ...stored, outdated: true };
+    // Lines past the end of the file point at nothing: show the thread on the last line instead
+    const last = after.lines.length;
+    if (pos.end > last) return { start: Math.min(pos.start, last), end: last, outdated: true };
+    return pos;
   }
 
   private saveHints(): void {

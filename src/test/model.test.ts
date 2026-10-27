@@ -237,3 +237,20 @@ test('fileError points at where a review file stops being valid JSON', () => {
   assert.deepStrictEqual(at('{"base": "main", "threads": ['), [1, 30]);
   assert.deepStrictEqual(fileError(new Error('missing "base"'), '{}'), { message: 'missing "base"' });
 });
+
+test('follow keeps a thread on its own code when one write changes several places', () => {
+  const before = ['function f(a) {', '  if (a) {', '    return 1;', '  }', '  return 2;', '}', 'function g() {', '  if (x) {', '    return 3;', '  }', '}'];
+  // The commented brace goes away with its if, and g changes too: the thread stays in f, outdated
+  const after = ['function f(a) {', '  return a ? 1 : 2;', '}', 'function g() {', '  if (x) {', '    return 4;', '  }', '}'];
+  assert.deepStrictEqual(follow(before, after, { start: 4, end: 4 }, ['  }']), { start: 2, end: 2, lost: true });
+  // Imports added above and the commented line itself changed: outdated, where the line is now
+  const code = ['import a', '', 'const x = 1;', 'use(x);', 'end()'];
+  const changed = ['import a', 'import b', 'import c', '', 'const x = 1;', 'use(x, 2);', 'end()'];
+  assert.deepStrictEqual(follow(code, changed, { start: 4, end: 4 }, ['use(x);']), { start: 6, end: 6, lost: true });
+});
+
+test('follow finds code that moved elsewhere in the file', () => {
+  const before = ['a();', 'function x() {', '  return 1;', '}', 'b();'];
+  const after = ['a();', 'b();', '', 'function x() {', '  return 1;', '}'];
+  assert.deepStrictEqual(follow(before, after, { start: 3, end: 3 }, ['  return 1;']), { start: 5, end: 5, lost: false });
+});

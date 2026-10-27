@@ -108,7 +108,7 @@ export async function reviewFilePath(root: string, base: string, target: string 
 // The base and target a review file compares, even when the rest of it is not valid JSON.
 export function readPair(text: string): { base: string; target: string | null } | undefined {
   try {
-    const raw = JSON.parse(text.replace(/^﻿/, ''));
+    const raw = JSON.parse(text.replace(/^\uFEFF/, ''));
     return typeof raw?.base === 'string' ? { base: raw.base, target: typeof raw.target === 'string' ? raw.target : null } : undefined;
   } catch {
     const base = /"base"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(text)?.[1];
@@ -221,7 +221,7 @@ export class ReviewDocument {
   private readonly read = new Map<object, { id: string; file?: string }>();
 
   constructor(text: string, options: ReadOptions = {}) {
-    const raw = JSON.parse(text.replace(/^﻿/, ''));
+    const raw = JSON.parse(text.replace(/^\uFEFF/, ''));
     if (typeof raw?.base !== 'string') throw new Error('missing "base"');
     this.raw = raw;
     const threads: Thread[] = [];
@@ -448,39 +448,105 @@ export function locate(lines: string[], snippet: string, startLine: number): (Sp
   return { ...span(nearest), ambiguous: found.length > 1 };
 }
 
-// Moves a span of lines from one version of a file to the next. Lines above the first change stay where they
-// are and lines below the last change shift by how much the file grew or shrank. A span the changes touch is
-// searched for by the lines it covered, preferring the copy with the same neighbours, and then by its snippet,
-// in case its code came back. `lost` means its lines are gone or can't be told apart from other copies.
-export function follow(before: string[], after: string[], span: Span, snippet?: string[]): Span & { lost: boolean } {
+// Beyond this many inserted and deleted lines between two versions, lines are no longer matched one by one
+const DIFF_LIMIT = 1000;
+
+// Which line of `after` each line of `before` is, for the lines that are unchanged, or -1. Lines are matched
+// with Myers' diff on the part between the versions' common start and end; a part that changed too much to
+// match within the limit counts as changed.
+export function lineMap(before: string[], after: string[]): Int32Array {
   const n = before.length;
   const m = after.length;
+  const map = new Int32Array(n).fill(-1);
   let top = 0;
-  while (top < n && top < m && before[top] === after[top]) top++;
+  while (top < n && top < m && before[top] === after[top]) map[top] = top++;
   let bottom = 0;
-  while (bottom < n - top && bottom < m - top && before[n - 1 - bottom] === after[m - 1 - bottom]) bottom++;
-  if (span.end <= top) return { ...span, lost: false };
-  if (span.start > n - bottom) return { start: span.start + m - n, end: span.end + m - n, lost: false };
-  const current = before.slice(span.start - 1, span.end);
-  const above = before.slice(Math.max(0, span.start - 1 - CONTEXT), span.start - 1);
-  const below = before.slice(span.end, span.end + CONTEXT);
+  while (bottom < n - top && bottom < m - top && before[n - 1 - bottom] === after[m - 1 - bottom]) {
+    map[n - 1 - bottom] = m - 1 - bottom;
+    bottom++;
+  }
+  for (const [i, j] of diff(before.slice(top, n - bottom), after.slice(top, m - bottom)) ?? []) map[top + i] = top + j;
+  return map;
+}
+
+// The pairs of equal lines in a shortest edit from `a` to `b`, or undefined past the limit
+function diff(a: string[], b: string[]): [number, number][] | undefined {
+  const n = a.length;
+  const m = b.length;
+  const offset = n + m + 1;
+  const v = new Int32Array(2 * offset + 1);
+  // v after each round d, for diagonals -d..d, to walk the edit back
+  const trace: Int32Array[] = [];
+  let rounds = -1;
+  search: for (let d = 0; d <= Math.min(n + m, DIFF_LIMIT); d++) {
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+      v[offset + k] = x;
+      if (x >= n && y >= m) {
+        trace.push(v.slice(offset - d, offset + d + 1));
+        rounds = d;
+        break search;
+      }
+    }
+    trace.push(v.slice(offset - d, offset + d + 1));
+  }
+  if (rounds < 0) return undefined;
+  const pairs: [number, number][] = [];
+  let x = n;
+  let y = m;
+  for (let d = rounds; d > 0; d--) {
+    const previous = (k: number) => trace[d - 1][k + d - 1];
+    const k = x - y;
+    const down = k === -d || (k !== d && previous(k - 1) < previous(k + 1));
+    const from = down ? k + 1 : k - 1;
+    const startX = down ? previous(from) : previous(from) + 1;
+    while (x > startX && y > startX - k) pairs.push([--x, --y]);
+    x = previous(from);
+    y = x - from;
+  }
+  while (x > 0 && y > 0) pairs.push([--x, --y]);
+  return pairs.reverse();
+}
+
+// Moves a span of lines from one version of a file to the next. Its lines, if unchanged, are found by diffing
+// the two versions, so identical lines elsewhere can't be mistaken for them. If they changed, the span stays
+// where its code was, after the last unchanged line above it, and is `lost`, unless the same lines were moved
+// elsewhere: a copy among the new lines that is the only one, or the one whose neighbours match best.
+export function follow(before: string[], after: string[], span: Span, snippet?: string[]): Span & { lost: boolean } {
+  const map = lineMap(before, after);
+  const first = span.start - 1;
+  const last = Math.min(span.end, before.length) - 1;
+  const lines = Array.from({ length: Math.max(last - first + 1, 0) }, (_, i) => map[first + i]);
+  if (lines.length && lines.every((j, i) => j >= 0 && (i === 0 || j === lines[i - 1] + 1))) {
+    return { start: lines[0] + 1, end: lines[lines.length - 1] + 1, lost: false };
+  }
+  const added = new Uint8Array(after.length).fill(1);
+  for (const j of map) if (j >= 0) added[j] = 0;
+  const above = before.slice(Math.max(0, first - CONTEXT), first);
+  const below = before.slice(last + 1, last + 1 + CONTEXT);
   const neighbours = (start: number, length: number) =>
     above.filter((l, i) => after[start - 1 - above.length + i] === l).length +
     below.filter((l, i) => after[start - 1 + length + i] === l).length;
-  // With `nearby`, only a copy with at least one of the old neighbours counts
-  // Lines above and below the changed region are the same lines as before, so the span can only have moved inside it
-  const search = (text: string[], nearby: boolean) => {
+  const moved = (text: string[]) => {
     if (!text.length) return undefined;
     const scored = occurrences(after, text)
-      .filter((start) => start > top && start + text.length - 1 <= m - bottom)
-      .map((start) => ({ start, score: neighbours(start, text.length), distance: Math.abs(start - span.start) }))
-      .filter((c) => !nearby || c.score > 0);
-    if (!scored.length) return undefined;
-    const best = scored.reduce((a, b) => (b.score > a.score || (b.score === a.score && b.distance < a.distance) ? b : a));
-    return { start: best.start, end: best.start + text.length - 1, lost: scored.length > 1 && best.score === 0 };
+      .filter((start) => added.subarray(start - 1, start - 1 + text.length).every(Boolean))
+      .map((start) => ({ start, score: neighbours(start, text.length) }))
+      .sort((a, b) => b.score - a.score);
+    const [best, next] = scored;
+    if (!best || (next && (best.score < 2 || best.score === next.score))) return undefined;
+    return { start: best.start, end: best.start + text.length - 1, lost: false };
   };
-  const found = search(current, false) ?? (snippet ? search(snippet, true) : undefined);
+  const found = moved(before.slice(first, last + 1)) ?? (snippet ? moved(snippet) : undefined);
   if (found) return found;
-  const start = Math.min(span.start, Math.max(m, 1));
-  return { start, end: Math.min(start + span.end - span.start, Math.max(m, 1)), lost: true };
+  let prior = first - 1;
+  while (prior >= 0 && map[prior] < 0) prior--;
+  const start = Math.min(map[first] >= 0 ? map[first] : prior >= 0 ? map[prior] + 1 : 0, Math.max(after.length - 1, 0)) + 1;
+  const end = last >= first && map[last] >= map[first] && map[first] >= 0 ? map[last] + 1 : start + span.end - span.start;
+  return { start, end: Math.min(end, Math.max(after.length, 1)), lost: true };
 }

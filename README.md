@@ -89,7 +89,7 @@ The `agentInstructions` field, written into every file, tells the agent to fill 
 
 Threads follow their code when lines are added or removed around it, also while you edit a file before saving it, and Prereview writes the current lines back to `startLine` and `endLine`. If the commented lines themselves change, or a line like `}` can't be told apart from its copies, the thread is marked **Outdated**.
 
-Prereview keeps whatever it doesn't use, such as extra fields an agent adds. If the file isn't valid JSON, for example while the agent is still writing it, the overview says where the problem is and your changes wait until it is fixed.
+Prereview keeps whatever it doesn't use, such as extra fields an agent adds. If the file isn't valid JSON, for example while the agent is still writing it, the overview says where the problem is, and your comments can't be saved until it is fixed.
 
 ## Privacy
 

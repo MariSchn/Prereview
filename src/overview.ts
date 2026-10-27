@@ -165,7 +165,8 @@ export class Overview implements vscode.Disposable {
       const pos = review.position(t);
       let snippet: ThreadView['snippet'];
       if (pos && t.file && t.snippet !== undefined) {
-        const lines = pos.outdated ? undefined : review.source(t);
+        const source = pos.outdated ? undefined : review.source(t);
+        const lines = source && pos.end <= source.length ? source : undefined;
         let start = pos.start;
         let end = pos.end;
         if (lines) {

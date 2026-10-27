@@ -216,3 +216,45 @@ test('only your own comments can be edited, and not to nothing', async () => {
     r.cleanup();
   }
 });
+
+test('a thread past the end of its file shows on the last line, outdated, and gets no empty snippet', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('one', 'two', 'three'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({}, 'general');
+    const data = onDisk(review);
+    data.threads.push({ id: 'far', file: 'a.ts', startLine: 9, resolved: false, comments: [{ author: 'agent', body: 'look here' }] });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    await review.refresh();
+    const far = review.data.threads.find((t) => t.id === 'far')!;
+    assert.deepStrictEqual(review.position(far), { start: 4, end: 4, outdated: true });
+    await review.reply('far', 'where?');
+    assert.strictEqual(onDisk(review).threads.find((t: any) => t.id === 'far').snippet, undefined);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('lines in a file with unsaved edits are not written to the review file', async () => {
+  const r = await repo({ 'a.ts': lines('old') });
+  try {
+    r.write('a.ts', lines('a', 'b', 'c', 'd', 'target'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 5, endLine: 5 }, 'here');
+    const doc = { uri: fake.Uri.file(path.join(r.root, 'a.ts')), isDirty: true, getText: () => lines('d', 'target') };
+    fake.workspace.textDocuments.push(doc);
+    const moved = new Promise((resolve) => review.onDidChange(resolve));
+    fake.editDocument(doc);
+    await moved;
+    assert.strictEqual(review.position(review.data.threads[0])?.start, 2);
+    await review.syncLines();
+    await review.reply(review.data.threads[0].id, 'more');
+    assert.strictEqual(onDisk(review).threads[0].startLine, 5);
+    fake.workspace.textDocuments.splice(fake.workspace.textDocuments.indexOf(doc), 1);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
