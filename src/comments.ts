@@ -247,6 +247,7 @@ export class CommentsController implements vscode.Disposable {
     const thread = this.threads.get(comment.threadId);
     if (!thread) return;
     this.editing.add(editKey(comment.threadId, comment.commentId));
+    this.shown.delete(comment.threadId);
     comment.mode = vscode.CommentMode.Editing;
     thread.comments = [...thread.comments];
   }
@@ -259,7 +260,10 @@ export class CommentsController implements vscode.Disposable {
       return;
     }
     await this.review?.editComment(comment.threadId, comment.commentId, body);
+    // Saved unchanged, nothing new is rendered, so the edited comment is dropped to leave edit mode
     this.editing.delete(editKey(comment.threadId, comment.commentId));
+    this.comments.get(comment.threadId)?.delete(comment.commentId);
+    this.shown.delete(comment.threadId);
     this.render();
   }
 

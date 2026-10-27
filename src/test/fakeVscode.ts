@@ -32,8 +32,10 @@ export class Uri {
   static joinPath(base: Uri, ...parts: string[]): Uri {
     return new Uri(base.scheme, path.posix.join(base.path, ...parts), base.query);
   }
+  // Like VS Code, with a Windows drive letter in lower case
   get fsPath(): string {
-    return this.path.split('/').join(path.sep);
+    const fsPath = this.path.split('/').join(path.sep);
+    return /^[A-Za-z]:/.test(fsPath) ? fsPath[0].toLowerCase() + fsPath.slice(1) : fsPath;
   }
   toString(): string {
     return `${this.scheme}://${this.path}${this.query ? `?${encodeURIComponent(this.query)}` : ''}`;

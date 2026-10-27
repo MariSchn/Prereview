@@ -89,14 +89,15 @@ export async function catBlob(root: string, sha: string): Promise<string> {
   return git(root, ['cat-file', 'blob', rev(sha)]);
 }
 
-// Which of these paths, relative to `cwd`, git ignores. Tracked files are never ignored.
-export async function ignoredPaths(cwd: string, paths: string[]): Promise<Set<string>> {
+// Which of these paths, relative to `cwd`, git ignores, or undefined when git can't tell, for example for a path
+// inside a submodule. Tracked files are never ignored.
+export async function ignoredPaths(cwd: string, paths: string[]): Promise<Set<string> | undefined> {
   if (!paths.length) return new Set();
   try {
     return new Set((await git(cwd, ['check-ignore', '--stdin', '-z'], paths.join('\0') + '\0')).split('\0').filter(Boolean));
   } catch (e) {
-    // Exit code 1 means none of them is ignored; on any other failure, treat them all as relevant
-    return new Set();
+    // Exit code 1 means none of them is ignored
+    return (e as GitError).exitCode === 1 ? new Set() : undefined;
   }
 }
 
@@ -114,6 +115,8 @@ const hashed = new Map<string, Hashed>();
 export async function hashObjects(dir: string, files: string[], write: boolean): Promise<(string | undefined)[]> {
   const ids: (string | undefined)[] = [];
   const regular: number[] = [];
+  // Taken before hashing, so a write while git reads the file can't be cached as the version it hashed
+  const stats: { size: number; mtimeMs: number }[] = [];
   await Promise.all(
     files.map(async (file, i) => {
       const full = path.join(dir, file);
@@ -127,6 +130,7 @@ export async function hashObjects(dir: string, files: string[], write: boolean):
           const settled = Date.now() - stat.mtimeMs > 2000;
           if (!write && settled && known?.size === stat.size && known.mtimeMs === stat.mtimeMs) ids[i] = known.id;
           else regular.push(i);
+          stats[i] = stat;
         }
       } catch {
         ids[i] = undefined;
@@ -143,14 +147,10 @@ export async function hashObjects(dir: string, files: string[], write: boolean):
       out = [];
       for (const i of regular) out.push((await hash([files[i]]).catch(() => undefined))?.trim());
     }
-    await Promise.all(
-      regular.map(async (i, k) => {
-        ids[i] = out[k];
-        const full = path.join(dir, files[i]);
-        const stat = await fs.stat(full).catch(() => undefined);
-        if (out[k] && stat) remember(hashed, full, { size: stat.size, mtimeMs: stat.mtimeMs, id: out[k]! });
-      }),
-    );
+    regular.forEach((i, k) => {
+      ids[i] = out[k];
+      if (out[k]) remember(hashed, path.join(dir, files[i]), { size: stats[i].size, mtimeMs: stats[i].mtimeMs, id: out[k]! });
+    });
   }
   return ids;
 }

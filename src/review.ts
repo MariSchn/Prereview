@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChangedFile, catBlob, changedFiles, hashObjects, ignoredPaths, mergeBase, revParse, show, worktrees } from './git';
+import { ChangedFile, catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktrees } from './git';
 import {
   FileError,
   REVIEWER,
@@ -122,6 +122,7 @@ export class Review implements vscode.Disposable {
   private stale = false;
   private refsChanged = true;
   private refsChecked = 0;
+  private refsWatched?: boolean;
   private shown = new Map<string, string>();
   private sourcesVersion = 0;
   private editTimer?: NodeJS.Timeout;
@@ -473,17 +474,25 @@ export class Review implements vscode.Disposable {
   private async loadChanges(): Promise<void> {
     const { base, target } = this.data;
     let targetDir = this.targetDir;
-    // Branches only move with a write in .git, so edits to the code don't need git to look them up again
+    // Branches only move with a write in .git, so edits to the code don't need git to look them up again. Where
+    // git keeps its refs outside the folder watched, as in a linked worktree, they are looked up every time.
+    this.refsWatched ??= await this.gitWatched();
     const pair = `${base}\n${target}`;
-    if (this.refsChanged || pair !== this.pair || Date.now() - this.refsChecked > REFS_TTL) {
-      const targetSha = target ? await revParse(this.root, target) : undefined;
-      const dir = target ? (await worktrees(this.root)).get(target) : this.root;
-      targetDir = target && dir === this.root ? undefined : dir;
-      if (targetSha !== this.targetSha) contentProvider.refreshOpen();
-      this.targetSha = targetSha;
-      this.baseSha = await mergeBase(this.root, base, targetSha ?? 'HEAD');
-      this.pair = pair;
+    if (this.refsChanged || !this.refsWatched || pair !== this.pair || Date.now() - this.refsChecked > REFS_TTL) {
+      // Cleared first, so a write in .git while git is asked counts for the next refresh
       this.refsChanged = false;
+      try {
+        const targetSha = target ? await revParse(this.root, target) : undefined;
+        const dir = target ? (await worktrees(this.root)).get(target) : this.root;
+        targetDir = target && dir === this.root ? undefined : dir;
+        if (targetSha !== this.targetSha) contentProvider.refreshOpen();
+        this.targetSha = targetSha;
+        this.baseSha = await mergeBase(this.root, base, targetSha ?? 'HEAD');
+      } catch (e) {
+        this.refsChanged = true;
+        throw e;
+      }
+      this.pair = pair;
       this.refsChecked = Date.now();
     }
     this.files = (await changedFiles(this.root, this.baseSha, { ref: targetDir ? undefined : this.targetSha, dir: targetDir })).sort((a, b) =>
@@ -597,10 +606,12 @@ export class Review implements vscode.Disposable {
   private record(dir: string, uri: vscode.Uri): void {
     if (this.disposed) return;
     const rel = path.relative(dir, uri.fsPath).split(path.sep).join('/');
-    if (uri.fsPath === this.filePath) this.events.review = true;
+    // VS Code may spell the path differently, such as the drive letter in lower case
+    if (!path.relative(this.filePath, uri.fsPath)) this.events.review = true;
     else if (dir === this.root && rel.startsWith('.git/')) {
       if (!GIT_STATE.test(rel)) return;
-      if (rel === '.git/info/exclude') this.ignored.clear();
+      // An ignored file that gets added is tracked from then on
+      if (rel === '.git/info/exclude' || rel.endsWith('/index')) this.ignored.clear();
       this.events.git = true;
     } else {
       const file = this.targetDir && path.relative(this.targetDir, uri.fsPath).split(path.sep).join('/');
@@ -617,8 +628,10 @@ export class Review implements vscode.Disposable {
     const now = Date.now();
     if (!this.timer) this.firstEvent = now;
     clearTimeout(this.timer);
-    const pause = Math.max(300, this.cost * 2);
-    const longest = Math.max(1500, this.cost * 4);
+    // Only changes to code wait longer when refreshing is slow; a reply in the review file is just read
+    const code = this.events.git || this.events.paths.size > 0;
+    const pause = code ? Math.max(300, this.cost * 2) : 300;
+    const longest = code ? Math.max(1500, this.cost * 4) : 300;
     this.timer = setTimeout(() => void this.flush(), Math.max(0, Math.min(pause, this.firstEvent + longest - now)));
   }
 
@@ -626,19 +639,29 @@ export class Review implements vscode.Disposable {
     this.timer = undefined;
     const { git, review, paths } = this.events;
     this.events = { git: false, review: false, paths: new Set() };
+    if (this.ignored.size > 5000) this.ignored.clear();
     const unknown = [...paths].filter((file) => !this.ignored.has(file));
+    let unsure = false;
     if (unknown.length && this.targetDir) {
       const ignored = await ignoredPaths(this.targetDir, unknown);
-      if (this.ignored.size > 5000) this.ignored.clear();
-      for (const file of unknown) this.ignored.set(file, ignored.has(file));
+      // Without an answer from git, they count as changes this time, and git is asked again next time
+      if (ignored) for (const file of unknown) this.ignored.set(file, ignored.has(file));
+      else unsure = true;
     }
     if (this.disposed) return;
-    const code = git || [...paths].some((file) => this.ignored.get(file) === false);
+    const code = git || unsure || [...paths].some((file) => this.ignored.get(file) === false);
     if (git) this.refsChanged = true;
     // In the background, only the review file is read, so agent replies still show up and notify
     if (code && !vscode.window.state.focused) this.stale = true;
     else if (code) return void this.queueRefresh();
     if (review) void this.reload();
+  }
+
+  // Whether git's own folders are the .git folder the watcher sees
+  private async gitWatched(): Promise<boolean> {
+    const dirs = (await git(this.root, ['rev-parse', '--absolute-git-dir', '--git-common-dir']).catch(() => '')).trim().split('\n');
+    const own = path.join(this.root, '.git');
+    return dirs.length === 2 && dirs.every((dir) => !path.relative(own, path.resolve(this.root, dir)));
   }
 
   // Threads move with the code while it is edited, before it is saved

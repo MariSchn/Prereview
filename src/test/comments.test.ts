@@ -45,6 +45,11 @@ test('a review change redraws only the threads it changed, and an edit survives 
     assert.deepStrictEqual(one.comments.map((c: ReviewComment) => c.source.body), ['first', 'more', 'answer']);
     controller.cancelEdit(editing);
     assert.strictEqual(one.comments[0].mode, fake.CommentMode.Preview);
+    // Saving an edit without changing anything still leaves edit mode
+    const unchanged: ReviewComment = one.comments[0];
+    controller.editComment(unchanged);
+    await controller.saveComment(unchanged);
+    assert.strictEqual(one.comments[0].mode, fake.CommentMode.Preview);
     controller.dispose();
     review.dispose();
   } finally {

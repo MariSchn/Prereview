@@ -113,7 +113,9 @@ async function tempRepo(files: Record<string, string>) {
   for (const [file, text] of Object.entries(files)) write(file, text);
   await git(root, ['add', '.']);
   await git(root, ['commit', '-qm', 'base']);
-  return { root, write, base: (await git(root, ['rev-parse', 'HEAD'])).trim(), cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  // On Windows a process git started can keep the folder busy for a moment after git itself has stopped
+  const cleanup = () => fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  return { root, write, base: (await git(root, ['rev-parse', 'HEAD'])).trim(), cleanup };
 }
 
 test('changedFiles lists a file that was removed from the index and written again once', async () => {
@@ -166,7 +168,7 @@ test('hashObjects gives every file an id, even when some of them git cannot hash
 test('git stops a call that runs past its timeout', async () => {
   const r = await tempRepo({ 'a.txt': 'a\n' });
   try {
-    await assert.rejects(git(r.root, ['-c', 'alias.wait=!sleep 5', 'wait'], undefined, { timeout: 300 }), /did not finish within 0.3 seconds/);
+    await assert.rejects(git(r.root, ['-c', 'alias.wait=!sleep 2', 'wait'], undefined, { timeout: 300 }), /did not finish within 0.3 seconds/);
   } finally {
     r.cleanup();
   }
@@ -175,8 +177,10 @@ test('git stops a call that runs past its timeout', async () => {
 test('ignoredPaths finds the paths git ignores', async () => {
   const r = await tempRepo({ '.gitignore': '*.log\nbuild/\n', 'a.txt': 'a\n' });
   try {
-    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['server.log', 'build/out.js', 'a.txt', 'new.ts']))].sort(), ['build/out.js', 'server.log']);
-    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['a.txt']))], []);
+    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['server.log', 'build/out.js', 'a.txt', 'new.ts']))!].sort(), ['build/out.js', 'server.log']);
+    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['a.txt']))!], []);
+    // A path git can't answer for gives no answer, rather than "not ignored"
+    assert.strictEqual(await ignoredPaths(r.root, ['../outside.log']), undefined);
   } finally {
     r.cleanup();
   }
