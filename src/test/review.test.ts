@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
 import * as fake from './fakeVscode';
-import { git } from '../git';
+import { git, repoRoot } from '../git';
 import { REVIEWER } from '../model';
 import { Review, contentProvider, createReview } from '../review';
 import { ReviewsView, listReviews } from '../reviewsView';
@@ -457,30 +457,32 @@ test('a viewed file is unticked when it changes, and the snapshot shows what it 
 
 test("a review of a worktree's branch is kept in that worktree, and found from the main checkout", async () => {
   const r = await repo({ 'a.ts': lines('one') });
-  const worktree = `${r.root}-agent`;
+  // Spelled as git spells worktrees, like the root the extension gets: on Windows without short names like RUNNER~1
+  const root = await repoRoot(r.root);
+  const worktree = `${root}-agent`;
   try {
-    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    await git(root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
     fs.writeFileSync(path.join(worktree, 'a.ts'), lines('one', 'uncommitted'));
-    const filePath = await createReview(r.root, 'main', 'agent');
+    const filePath = await createReview(root, 'main', 'agent');
     assert.strictEqual(path.dirname(filePath), path.join(worktree, '.prereview'));
     assert.strictEqual(fs.readFileSync(path.join(worktree, '.prereview', '.gitignore'), 'utf8'), '*\n');
-    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.filePath), [filePath]);
+    assert.deepStrictEqual((await listReviews(root)).map((e) => e.filePath), [filePath]);
     // Opened from the main checkout, it still shows the worktree's uncommitted changes
-    const review = await Review.load(filePath, new fake.Memento(), r.root);
+    const review = await Review.load(filePath, new fake.Memento(), root);
     assert.deepStrictEqual([review.targetDir, review.files.map((f) => [f.path, f.added])], [worktree, [['a.ts', 1]]]);
     review.dispose();
     // Starting the same review again opens this one, and one kept in the main checkout is found too
-    assert.strictEqual(await createReview(r.root, 'main', 'agent'), filePath);
-    const older = await createReview(r.root, 'main', null);
-    assert.strictEqual(path.dirname(older), path.join(r.root, '.prereview'));
-    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.data.target), [null, 'agent']);
+    assert.strictEqual(await createReview(root, 'main', 'agent'), filePath);
+    const older = await createReview(root, 'main', null);
+    assert.strictEqual(path.dirname(older), path.join(root, '.prereview'));
+    assert.deepStrictEqual((await listReviews(root)).map((e) => e.data.target), [null, 'agent']);
     // A review of the working tree belongs to the checkout it was started in
     const theirs = await createReview(worktree, 'main', null);
     assert.strictEqual(path.dirname(theirs), path.join(worktree, '.prereview'));
-    assert.deepStrictEqual((await listReviews(r.root)).map((e) => e.filePath), [older, filePath]);
+    assert.deepStrictEqual((await listReviews(root)).map((e) => e.filePath), [older, filePath]);
     assert.deepStrictEqual((await listReviews(worktree)).map((e) => e.filePath), [filePath, theirs]);
   } finally {
-    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    await git(root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
     fs.rmSync(worktree, { recursive: true, force: true });
     r.cleanup();
   }
@@ -488,12 +490,13 @@ test("a review of a worktree's branch is kept in that worktree, and found from t
 
 test('a review kept in another checkout reads the replies written there', async () => {
   const r = await repo({ 'a.ts': lines('one') });
-  const worktree = `${r.root}-agent`;
+  const root = await repoRoot(r.root);
+  const worktree = `${root}-agent`;
   try {
-    await git(r.root, ['branch', 'feature']);
-    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    await git(root, ['branch', 'feature']);
+    await git(root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
     // Looked at from the agent's worktree, a review of a branch that isn't checked out stays in the main checkout
-    const review = await Review.load(await createReview(r.root, 'main', 'feature'), new fake.Memento(), worktree);
+    const review = await Review.load(await createReview(root, 'main', 'feature'), new fake.Memento(), worktree);
     await review.addThread({}, 'general');
     const data = onDisk(review);
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
@@ -503,7 +506,7 @@ test('a review kept in another checkout reads the replies written there', async 
     assert.strictEqual(review.data.threads[0].comments.length, 2);
     review.dispose();
   } finally {
-    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    await git(root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
     fs.rmSync(worktree, { recursive: true, force: true });
     r.cleanup();
   }
@@ -511,11 +514,12 @@ test('a review kept in another checkout reads the replies written there', async 
 
 test('worktrees without a review are suggested, except the one with the default branch', async () => {
   const r = await repo({ 'a.ts': lines('one') });
-  const worktree = `${r.root}-agent`;
+  const root = await repoRoot(r.root);
+  const worktree = `${root}-agent`;
   const view = new ReviewsView();
   try {
-    await git(r.root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
-    view.setRoot(r.root);
+    await git(root, ['worktree', 'add', '-q', '-b', 'agent', worktree]);
+    view.setRoot(root);
     await view.refresh();
     assert.deepStrictEqual(view.suggestions, [{ branch: 'agent', dir: worktree }]);
     view.setRoot(worktree);
@@ -523,7 +527,7 @@ test('worktrees without a review are suggested, except the one with the default 
     assert.deepStrictEqual(view.suggestions, []);
   } finally {
     view.dispose();
-    await git(r.root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
+    await git(root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
     fs.rmSync(worktree, { recursive: true, force: true });
     r.cleanup();
   }
