@@ -122,6 +122,12 @@
         "icon": "$(copy)"
       },
       {
+        "command": "prereview.openReviewFile",
+        "title": "Open Review File",
+        "category": "Prereview",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "prereview.refresh",
         "title": "Refresh",
         "category": "Prereview",
@@ -455,6 +461,10 @@
         },
         {
           "command": "prereview.copyReviewPath",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.openReviewFile",
           "when": "prereview.active"
         },
         {

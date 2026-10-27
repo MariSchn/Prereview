@@ -1,12 +1,14 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ReviewData, ThreadStatus, countStatuses, pairLabel, parseReview } from './model';
+import { FileError, ReviewData, ThreadStatus, countStatuses, describeFileError, fileError, pairLabel, parseReview, readPair } from './model';
 
 export interface ReviewEntry {
   filePath: string;
   data: ReviewData;
   counts: Record<ThreadStatus, number>;
+  // Set when the file can't be read; `data` then only holds what it compares, if that could be found
+  error?: FileError;
 }
 
 export async function listReviews(root: string): Promise<ReviewEntry[]> {
@@ -15,14 +17,27 @@ export async function listReviews(root: string): Promise<ReviewEntry[]> {
   const entries: ReviewEntry[] = [];
   for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
     const filePath = path.join(dir, name);
+    let text: string;
     try {
-      const data = parseReview(await fs.readFile(filePath, 'utf8'));
-      entries.push({ filePath, data, counts: countStatuses(data.threads) });
+      text = await fs.readFile(filePath, 'utf8');
     } catch {
       continue;
     }
+    try {
+      const data = parseReview(text);
+      entries.push({ filePath, data, counts: countStatuses(data.threads) });
+    } catch (e) {
+      const pair = readPair(text);
+      const data = { title: '', description: '', base: pair?.base ?? '', target: pair?.target ?? null, threads: [] };
+      entries.push({ filePath, data, counts: countStatuses([]), error: fileError(e as Error, text) });
+    }
   }
   return entries;
+}
+
+// What a review compares, or its file name when that can't be read from it
+export function entryLabel(entry: ReviewEntry): string {
+  return entry.data.base ? pairLabel(entry.data) : path.basename(entry.filePath);
 }
 
 export function countsLabel(counts: Record<ThreadStatus, number>): string {
@@ -86,15 +101,21 @@ export class ReviewsView implements vscode.TreeDataProvider<ReviewEntry>, vscode
   }
 
   getTreeItem(entry: ReviewEntry): vscode.TreeItem {
-    const pair = pairLabel(entry.data);
+    const pair = entryLabel(entry);
     const active = entry.filePath === this.active;
     const item = new vscode.TreeItem(entry.data.title || pair);
     item.id = entry.filePath;
-    item.description = [active && 'active', entry.data.title && pair, entry.counts.awaitingYou && `${entry.counts.awaitingYou} awaiting you`]
+    item.description = [
+      active && 'active',
+      entry.data.title && pair,
+      entry.error ? "can't be read" : entry.counts.awaitingYou && `${entry.counts.awaitingYou} awaiting you`,
+    ]
       .filter(Boolean)
       .join(' · ');
-    item.tooltip = `${entry.data.title ? `${entry.data.title}\n` : ''}${pair}\n${countsLabel(entry.counts)}`;
-    item.iconPath = icon(entry.counts);
+    item.tooltip = entry.error
+      ? `${path.basename(entry.filePath)} ${describeFileError(entry.error)}.\n${entry.error.message}`
+      : `${entry.data.title ? `${entry.data.title}\n` : ''}${pair}\n${countsLabel(entry.counts)}`;
+    item.iconPath = entry.error ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground')) : icon(entry.counts);
     item.contextValue = 'review';
     item.command = { command: 'prereview.switchReview', title: 'Open Review', arguments: [entry] };
     return item;

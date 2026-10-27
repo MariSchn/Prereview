@@ -21,10 +21,12 @@ export class ReviewComment implements vscode.Comment {
   mode = vscode.CommentMode.Preview;
   readonly author: vscode.CommentAuthorInformation;
   readonly contextValue: string;
+  readonly commentId: string;
   readonly timestamp?: Date;
 
-  constructor(comment: Comment, readonly threadId: string, readonly index: number, icons: AuthorIcons) {
+  constructor(comment: Comment, readonly threadId: string, icons: AuthorIcons) {
     const mine = comment.author === REVIEWER;
+    this.commentId = comment.id;
     this.body = new vscode.MarkdownString(comment.body);
     this.author = { name: authorName(comment.author), iconPath: mine ? icons.reviewer : icons.agent };
     this.contextValue = mine ? 'reviewer' : 'agent';
@@ -76,10 +78,10 @@ export class CommentsController implements vscode.Disposable {
 
   // Offer comments on a changed file only while its review diff is visible, not when it is opened on its own.
   private inReviewDiff(uri: vscode.Uri): boolean {
-    const location = this.review?.locationOf(uri);
+    const location = this.review?.commentLocation(uri);
     if (!location || uri.scheme === SCHEME) return !!location;
     return vscode.window.visibleTextEditors.some(
-      (e) => e.document.uri.scheme === SCHEME && this.review!.locationOf(e.document.uri)?.file === location.file,
+      (e) => e.document.uri.scheme === SCHEME && this.review!.fileOf(e.document.uri)?.path === location.file,
     );
   }
 
@@ -116,7 +118,7 @@ export class CommentsController implements vscode.Disposable {
         this.threads.set(t.id, thread);
       }
       if (range) thread.range = range;
-      if (this.editing !== t.id) thread.comments = t.comments.map((c, i) => new ReviewComment(c, t.id, i, this.icons));
+      if (this.editing !== t.id) thread.comments = t.comments.map((c) => new ReviewComment(c, t.id, this.icons));
       const state = t.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
       if (thread.state !== state) {
         thread.collapsibleState = t.resolved ? vscode.CommentThreadCollapsibleState.Collapsed : vscode.CommentThreadCollapsibleState.Expanded;
@@ -167,13 +169,13 @@ export class CommentsController implements vscode.Disposable {
   // Comments cover whole lines, and the selection fades once the comment box takes focus.
   private decorateSelection(editor: vscode.TextEditor): void {
     const { selection } = editor;
-    const show = this.review?.locationOf(editor.document.uri) && selection.start.line !== selection.end.line;
+    const show = selection.start.line !== selection.end.line && this.inReviewDiff(editor.document.uri);
     editor.setDecorations(this.selectionDecoration, show ? [selection] : []);
   }
 
   async createThread(reply: vscode.CommentReply): Promise<void> {
     const draft = reply.thread;
-    const location = this.review?.locationOf(draft.uri);
+    const location = this.review?.commentLocation(draft.uri);
     if (!this.review || !location) {
       draft.dispose();
       return;
@@ -217,8 +219,12 @@ export class CommentsController implements vscode.Disposable {
 
   async saveComment(comment: ReviewComment): Promise<void> {
     const body = typeof comment.body === 'string' ? comment.body : comment.body.value;
+    if (!body.trim()) {
+      vscode.window.showWarningMessage("A comment can't be empty. Delete it instead.");
+      return;
+    }
     this.editing = undefined;
-    await this.review?.editComment(comment.threadId, comment.index, body);
+    await this.review?.editComment(comment.threadId, comment.commentId, body);
   }
 
   cancelEdit(): void {
@@ -227,7 +233,7 @@ export class CommentsController implements vscode.Disposable {
   }
 
   async deleteComment(comment: ReviewComment): Promise<void> {
-    await this.review?.deleteComment(comment.threadId, comment.index);
+    await this.review?.deleteComment(comment.threadId, comment.commentId);
   }
 
   dispose(): void {
