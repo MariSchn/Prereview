@@ -166,12 +166,8 @@ test('hashObjects gives every file an id, even when some of them git cannot hash
 });
 
 test('git stops a call that runs past its timeout', async () => {
-  const r = await tempRepo({ 'a.txt': 'a\n' });
-  try {
-    await assert.rejects(git(r.root, ['-c', 'alias.wait=!sleep 2', 'wait'], undefined, { timeout: 300 }), /did not finish within 0.3 seconds/);
-  } finally {
-    r.cleanup();
-  }
+  // Outside a repository, so the sleep git started, which outlives it on Windows, holds no folder that is removed
+  await assert.rejects(git(os.tmpdir(), ['-c', 'alias.wait=!sleep 2', 'wait'], undefined, { timeout: 300 }), /did not finish within 0.3 seconds/);
 });
 
 test('ignoredPaths finds the paths git ignores', async () => {
