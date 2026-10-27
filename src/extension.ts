@@ -220,7 +220,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     command('prereview.unresolve', (thread: vscode.CommentThread) => comments.setResolved(thread, false)),
     command('prereview.editComment', (comment: ReviewComment) => comments.editComment(comment)),
     command('prereview.saveComment', (comment: ReviewComment) => comments.saveComment(comment)),
-    command('prereview.cancelEdit', () => comments.cancelEdit()),
+    command('prereview.cancelEdit', (comment: ReviewComment) => comments.cancelEdit(comment)),
     command('prereview.deleteComment', async (comment: ReviewComment) => {
       if (await confirmDelete()) await comments.deleteComment(comment);
     }),

@@ -831,6 +831,8 @@
       if (!body) return;
       post({ type: 'edit', id: t.id, commentId: c.id, body });
       editing = null;
+      // An unchanged comment brings no new state, so leave edit mode here
+      render();
     };
     onSubmit(area, save);
     area.addEventListener('keydown', (event) => {

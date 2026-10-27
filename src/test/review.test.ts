@@ -258,3 +258,174 @@ test('lines in a file with unsaved edits are not written to the review file', as
     r.cleanup();
   }
 });
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Counts full refreshes, optionally making each one slower
+function refreshes(review: Review, delay = 0): () => number {
+  let runs = 0;
+  const target = review as any;
+  const refreshOnce = target.refreshOnce.bind(review);
+  target.refreshOnce = async () => {
+    runs++;
+    await sleep(delay);
+    return refreshOnce();
+  };
+  return () => runs;
+}
+
+test('steady file activity delays a refresh only for so long', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    const runs = refreshes(review);
+    for (const end = Date.now() + 2000; Date.now() < end; await sleep(100)) {
+      r.write('a.ts', lines('two', `${Date.now()}`));
+      fake.touch(path.join(r.root, 'a.ts'));
+    }
+    assert.ok(runs() >= 1, `refreshed ${runs()} times`);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('ignored files never refresh, and code changed in the background waits for the window', async () => {
+  const r = await repo({ '.gitignore': '*.log\n', 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({}, 'question');
+    const runs = refreshes(review);
+    r.write('server.log', 'tick\n');
+    fake.touch(path.join(r.root, 'server.log'));
+    await sleep(600);
+    assert.strictEqual(runs(), 0);
+    fake.setFocused(false);
+    r.write('a.ts', lines('three'));
+    fake.touch(path.join(r.root, 'a.ts'));
+    // The agent's reply still shows up while the window is in the background
+    const data = onDisk(review);
+    data.threads[0].comments.push({ author: 'agent', body: 'answer' });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    fake.touch(review.filePath);
+    await sleep(600);
+    assert.deepStrictEqual([runs(), review.data.threads[0].comments.length], [0, 2]);
+    fake.setFocused(true);
+    await sleep(300);
+    assert.strictEqual(runs(), 1);
+    assert.strictEqual(review.files.find((f) => f.path === 'a.ts')?.added, 1);
+    review.dispose();
+  } finally {
+    fake.setFocused(true);
+    r.cleanup();
+  }
+});
+
+test("the extension's own write does not redraw the views a second time", async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    let changes = 0;
+    review.onDidChange(() => changes++);
+    await review.addThread({}, 'general');
+    fake.touch(review.filePath);
+    await sleep(600);
+    assert.strictEqual(changes, 1);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a reply waits for at most the refresh that is running, however busy the files are', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({}, 'question');
+    refreshes(review, 800);
+    let started = Date.now();
+    await review.refresh();
+    const refresh = Date.now() - started;
+    // Files change more often than a refresh takes, but less often than refreshes are put off for
+    let busy = true;
+    const stream = (async () => {
+      while (busy) {
+        r.write('a.ts', lines('two', `${Date.now()}`));
+        fake.touch(path.join(r.root, 'a.ts'));
+        await sleep(400);
+      }
+    })();
+    await sleep(2 * refresh);
+    started = Date.now();
+    await review.reply(review.data.threads[0].id, 'ok');
+    const waited = Date.now() - started;
+    busy = false;
+    await stream;
+    assert.ok(waited < 2 * refresh, `the reply waited ${waited} ms, and one refresh takes ${refresh} ms`);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a file git ignored is refreshed once it is added anyway, and a reply is read at once after a slow refresh', async () => {
+  const r = await repo({ '.gitignore': '*.gen.ts\n', 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({}, 'question');
+    const runs = refreshes(review);
+    r.write('api.gen.ts', lines('x'));
+    fake.touch(path.join(r.root, 'api.gen.ts'));
+    await sleep(600);
+    assert.strictEqual(runs(), 0);
+    await git(r.root, ['add', '-f', 'api.gen.ts']);
+    fake.touch(path.join(r.root, '.git', 'index'));
+    await sleep(600);
+    r.write('api.gen.ts', lines('x', 'y', 'z'));
+    fake.touch(path.join(r.root, 'api.gen.ts'));
+    await sleep(600);
+    assert.strictEqual(review.files.find((f) => f.path === 'api.gen.ts')?.added, 3);
+    // However long the last refresh took, a change to the review file alone is read within a moment
+    (review as any).cost = 3000;
+    const data = onDisk(review);
+    data.threads[0].comments.push({ author: 'agent', body: 'answer' });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    fake.touch(review.filePath);
+    await sleep(600);
+    assert.strictEqual(review.data.threads[0].comments.length, 2);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a review opened from a linked worktree notices branches move, though their refs are outside it', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  const linked = `${r.root}-linked`;
+  try {
+    await git(r.root, ['worktree', 'add', '-q', '-b', 'feat', linked]);
+    fs.writeFileSync(path.join(linked, 'b.ts'), lines('b'));
+    await git(linked, ['add', '.']);
+    await git(linked, ['commit', '-qm', 'b']);
+    const review = await Review.open(linked, 'main', null, new fake.Memento());
+    assert.deepStrictEqual(review.files.map((f) => f.path), ['b.ts']);
+    // main moves on, and the worktree is rebased onto it: c.ts comes from main, not from this branch
+    r.write('c.ts', lines('c'));
+    await git(r.root, ['add', 'c.ts']);
+    await git(r.root, ['commit', '-qm', 'c']);
+    await git(linked, ['rebase', '-q', 'main']);
+    fake.touch(path.join(linked, 'b.ts'));
+    await sleep(800);
+    assert.deepStrictEqual(review.files.map((f) => f.path), ['b.ts']);
+    review.dispose();
+  } finally {
+    await git(r.root, ['worktree', 'remove', '--force', linked]).catch(() => undefined);
+    fs.rmSync(linked, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

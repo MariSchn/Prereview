@@ -37,6 +37,8 @@ export class Overview implements vscode.Disposable {
   private panel?: vscode.WebviewPanel;
   private review?: Review;
   private version = 0;
+  // The state the page shows; posting it again would only rebuild the page
+  private posted?: string;
   private rendered = new Map<string, string>();
   private stale = new Map<string, string>();
 
@@ -85,7 +87,10 @@ export class Overview implements vscode.Disposable {
     webview.onDidReceiveMessage((message) =>
       this.handle(message).catch((e) => vscode.window.showErrorMessage(`Prereview: ${(e as Error).message}`)),
     );
-    this.panel.onDidDispose(() => (this.panel = undefined));
+    this.panel.onDidDispose(() => {
+      this.panel = undefined;
+      this.posted = undefined;
+    });
   }
 
   async update(): Promise<void> {
@@ -95,6 +100,9 @@ export class Overview implements vscode.Disposable {
     if (version !== this.version || !this.panel) return;
     this.panel.title = `Review: ${state.title}`;
     this.panel.iconPath = this.icon(state.counts.awaitingYou > 0);
+    const posted = JSON.stringify(state);
+    if (posted === this.posted) return;
+    this.posted = posted;
     await this.panel.webview.postMessage({ type: 'state', state });
   }
 
@@ -108,6 +116,7 @@ export class Overview implements vscode.Disposable {
     const body = typeof message.body === 'string' ? message.body.trim() : '';
     switch (message.type) {
       case 'ready':
+        this.posted = undefined;
         return this.update();
       case 'open': {
         const thread = review.data.threads.find((t) => t.id === message.id);
