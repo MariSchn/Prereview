@@ -24,13 +24,17 @@ export class ReviewComment implements vscode.Comment {
   readonly commentId: string;
   readonly timestamp?: Date;
 
-  constructor(comment: Comment, readonly threadId: string, icons: AuthorIcons) {
-    const mine = comment.author === REVIEWER;
-    this.commentId = comment.id;
-    this.body = new vscode.MarkdownString(comment.body);
-    this.author = { name: authorName(comment.author), iconPath: mine ? icons.reviewer : icons.agent };
+  constructor(
+    readonly source: Comment,
+    readonly threadId: string,
+    icons: AuthorIcons,
+  ) {
+    const mine = source.author === REVIEWER;
+    this.commentId = source.id;
+    this.body = new vscode.MarkdownString(source.body);
+    this.author = { name: authorName(source.author), iconPath: mine ? icons.reviewer : icons.agent };
     this.contextValue = mine ? 'reviewer' : 'agent';
-    const time = Date.parse(comment.createdAt ?? '');
+    const time = Date.parse(source.createdAt ?? '');
     if (!isNaN(time)) this.timestamp = new Date(time);
   }
 }
@@ -38,6 +42,12 @@ export class ReviewComment implements vscode.Comment {
 export class CommentsController implements vscode.Disposable {
   private readonly controller = vscode.comments.createCommentController('prereview', 'Prereview');
   private readonly threads = new Map<string, vscode.CommentThread>();
+  // What each thread was last given, so a change elsewhere in the review leaves it alone: VS Code redraws a
+  // thread whenever it is assigned to, and keeps every comment object it was ever given.
+  private readonly shown = new Map<string, string>();
+  private readonly comments = new Map<string, Map<string, ReviewComment>>();
+  // Comments being edited, by thread and comment id
+  private readonly editing = new Set<string>();
   private readonly selectionDecoration = vscode.window.createTextEditorDecorationType({
     isWholeLine: true,
     backgroundColor: new vscode.ThemeColor('prereview.commentRangeBackground'),
@@ -47,7 +57,6 @@ export class CommentsController implements vscode.Disposable {
   });
   private readonly listeners: vscode.Disposable[];
   private review?: Review;
-  private editing?: string;
   private icons: AuthorIcons;
 
   constructor(media: vscode.Uri) {
@@ -55,6 +64,7 @@ export class CommentsController implements vscode.Disposable {
     this.listeners = [
       vscode.window.onDidChangeActiveColorTheme(() => {
         this.icons = authorIcons(media);
+        this.forget();
         this.render();
       }),
       vscode.window.onDidChangeVisibleTextEditors(() => {
@@ -88,7 +98,8 @@ export class CommentsController implements vscode.Disposable {
   setReview(review: Review | undefined): void {
     for (const thread of this.threads.values()) thread.dispose();
     this.threads.clear();
-    this.editing = undefined;
+    this.forget();
+    this.editing.clear();
     this.review = review;
     this.updateCommentingRanges();
     this.render();
@@ -111,14 +122,19 @@ export class CommentsController implements vscode.Disposable {
       if (thread && thread.uri.toString() !== uri.toString()) {
         thread.dispose();
         thread = undefined;
+        this.shown.delete(t.id);
       }
       if (!thread) {
         // An undefined range makes a whole-file thread; it can only be set when the thread is created.
         thread = this.controller.createCommentThread(uri, range as vscode.Range, []);
         this.threads.set(t.id, thread);
       }
+      const editing = t.comments.filter((c) => this.editing.has(editKey(t.id, c.id))).map((c) => c.id);
+      const shown = JSON.stringify([pos, t.resolved, status, t.comments, editing]);
+      if (this.shown.get(t.id) === shown) continue;
+      this.shown.set(t.id, shown);
       if (range) thread.range = range;
-      if (this.editing !== t.id) thread.comments = t.comments.map((c) => new ReviewComment(c, t.id, this.icons));
+      thread.comments = t.comments.map((c) => this.comment(t.id, c));
       const state = t.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
       if (thread.state !== state) {
         thread.collapsibleState = t.resolved ? vscode.CommentThreadCollapsibleState.Collapsed : vscode.CommentThreadCollapsibleState.Expanded;
@@ -131,15 +147,35 @@ export class CommentsController implements vscode.Disposable {
       if (!seen.has(id)) {
         thread.dispose();
         this.threads.delete(id);
+        this.shown.delete(id);
+        this.comments.delete(id);
       }
     }
     this.decorateThreads();
+  }
+
+  // The comment object last given to VS Code, while it still shows the same comment or is being edited
+  private comment(threadId: string, c: Comment): ReviewComment {
+    const known = this.comments.get(threadId) ?? new Map<string, ReviewComment>();
+    this.comments.set(threadId, known);
+    const last = known.get(c.id);
+    const same = last && last.source.body === c.body && last.source.author === c.author && last.source.createdAt === c.createdAt;
+    if (last && (same || this.editing.has(editKey(threadId, c.id)))) return last;
+    const comment = new ReviewComment(c, threadId, this.icons);
+    known.set(c.id, comment);
+    return comment;
+  }
+
+  private forget(): void {
+    this.shown.clear();
+    this.comments.clear();
   }
 
   expandThread(id: string): void {
     // A thread's collapsed state is not reported back, so recreate it to be sure it opens.
     this.threads.get(id)?.dispose();
     this.threads.delete(id);
+    this.shown.delete(id);
     this.render();
     const thread = this.threads.get(id);
     if (thread) thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
@@ -210,25 +246,26 @@ export class CommentsController implements vscode.Disposable {
   editComment(comment: ReviewComment): void {
     const thread = this.threads.get(comment.threadId);
     if (!thread) return;
-    this.editing = comment.threadId;
-    thread.comments = thread.comments.map((c) => {
-      if (c === comment) c.mode = vscode.CommentMode.Editing;
-      return c;
-    });
+    this.editing.add(editKey(comment.threadId, comment.commentId));
+    comment.mode = vscode.CommentMode.Editing;
+    thread.comments = [...thread.comments];
   }
 
+  // A comment stays in edit mode, with what was typed, until it is saved
   async saveComment(comment: ReviewComment): Promise<void> {
     const body = typeof comment.body === 'string' ? comment.body : comment.body.value;
     if (!body.trim()) {
       vscode.window.showWarningMessage("A comment can't be empty. Delete it instead.");
       return;
     }
-    this.editing = undefined;
     await this.review?.editComment(comment.threadId, comment.commentId, body);
+    this.editing.delete(editKey(comment.threadId, comment.commentId));
+    this.render();
   }
 
-  cancelEdit(): void {
-    this.editing = undefined;
+  cancelEdit(comment: ReviewComment): void {
+    this.editing.delete(editKey(comment.threadId, comment.commentId));
+    this.comments.get(comment.threadId)?.delete(comment.commentId);
     this.render();
   }
 
@@ -246,4 +283,8 @@ export class CommentsController implements vscode.Disposable {
   private idOf(thread: vscode.CommentThread): string | undefined {
     return [...this.threads].find(([, t]) => t === thread)?.[0];
   }
+}
+
+function editKey(threadId: string, commentId: string): string {
+  return `${threadId}\n${commentId}`;
 }

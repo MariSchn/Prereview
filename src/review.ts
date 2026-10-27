@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChangedFile, catBlob, changedFiles, hashObjects, mergeBase, revParse, show, worktrees } from './git';
+import { ChangedFile, catBlob, changedFiles, hashObjects, ignoredPaths, mergeBase, revParse, show, worktrees } from './git';
 import {
   FileError,
   REVIEWER,
@@ -22,6 +22,10 @@ import {
 
 export const SCHEME = 'prereview';
 const DELETED = 'deleted';
+// Git writes to .git all the time (objects, logs); only refs, the index, excludes and worktrees affect a review.
+const GIT_STATE = /^\.git\/(HEAD$|packed-refs$|index$|info\/exclude$|refs\/|reftable\/|worktrees\/[^/]+(\/(HEAD|index))?$)/;
+// Ask git again where branches point at least this often, in case a ref changed somewhere not watched
+const REFS_TTL = 10_000;
 
 export class GitContentProvider implements vscode.TextDocumentContentProvider {
   private readonly changed = new vscode.EventEmitter<vscode.Uri>();
@@ -107,12 +111,24 @@ export class Review implements vscode.Disposable {
   private readonly listeners: vscode.Disposable[];
   private targetWatcher?: vscode.FileSystemWatcher;
   private timer?: NodeJS.Timeout;
+  private firstEvent = 0;
+  // File events since the last refresh: in .git, on the review file, and paths in the worktree under review
+  private events = { git: false, review: false, paths: new Set<string>() };
+  // Whether git ignores a path in the worktree under review; cleared when ignore rules change
+  private ignored = new Map<string, boolean>();
+  // How long the last full refresh took; refreshes wait longer when they are slow
+  private cost = 0;
+  // Code changed while the window was in the background; refresh once it is back
+  private stale = false;
+  private refsChanged = true;
+  private refsChecked = 0;
+  private shown = new Map<string, string>();
+  private sourcesVersion = 0;
   private editTimer?: NodeJS.Timeout;
   private hintTimer?: NodeJS.Timeout;
   private edits = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
-  private queuedRefresh?: Promise<void>;
-  private refreshAgain = false;
+  private pendingRefresh?: Promise<void>;
   private warnings = new Set<string>();
   private disposed = false;
   private baseSha = '';
@@ -124,6 +140,7 @@ export class Review implements vscode.Disposable {
   private blobs = new Map<string, string>();
   private pendingViewed = new Map<string, boolean>();
   private snapshot?: string;
+  private pair?: string;
   private lastRead?: string;
   files: ChangedFile[] = [];
   changesError?: string;
@@ -144,6 +161,11 @@ export class Review implements vscode.Disposable {
         if (e.contentChanges.length) this.edited(e.document.uri);
       }),
       vscode.workspace.onDidCloseTextDocument((doc) => this.edited(doc.uri)),
+      vscode.window.onDidChangeWindowState((window) => {
+        if (!window.focused || !this.stale) return;
+        this.stale = false;
+        void this.queueRefresh();
+      }),
     ];
   }
 
@@ -182,27 +204,27 @@ export class Review implements vscode.Disposable {
     return `${this.data.base} ↔ ${this.targetLabel}`;
   }
 
+  // Reads everything again, including where the branches point
   refresh(): Promise<void> {
-    if (this.queuedRefresh) {
-      this.refreshAgain = true;
-      return this.queuedRefresh;
-    }
-    const next = this.enqueue(async () => {
-      try {
-        do {
-          this.refreshAgain = false;
-          await this.refreshOnce();
-        } while (this.refreshAgain && !this.disposed);
-      } finally {
-        this.queuedRefresh = undefined;
-      }
+    this.refsChanged = true;
+    return this.queueRefresh();
+  }
+
+  // A refresh that hasn't started yet covers later requests. One that has started may miss what changed since,
+  // so another is queued, after the edits already waiting.
+  private queueRefresh(): Promise<void> {
+    if (this.pendingRefresh) return this.pendingRefresh;
+    const next: Promise<void> = this.enqueue(async () => {
+      if (this.pendingRefresh === next) this.pendingRefresh = undefined;
+      await this.refreshOnce();
     });
-    this.queuedRefresh = next;
+    this.pendingRefresh = next;
     return next;
   }
 
   private async refreshOnce(): Promise<void> {
     if (this.disposed) return;
+    const started = Date.now();
     const warnings: string[] = [];
     let text: string | undefined;
     try {
@@ -228,7 +250,26 @@ export class Review implements vscode.Disposable {
     this.warnings = new Set(warnings);
     await this.reanchor();
     this.remember();
-    // Unrelated file activity triggers refreshes too; redrawing the views each time makes them flicker.
+    this.cost = Date.now() - started;
+    this.announce(true);
+  }
+
+  // Picks up a change to the review file alone, without asking git anything
+  private reload(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.disposed) return;
+      const text = await fs.readFile(this.filePath, 'utf8').catch(() => undefined);
+      if (text === undefined) return;
+      this.read(text);
+      await this.reanchor(new Set());
+      this.remember();
+      this.announce(true);
+    });
+  }
+
+  // Tells the views about a change, unless nothing they show is different. Unrelated file activity triggers
+  // refreshes too, and redrawing the views each time makes them flicker.
+  private announce(external: boolean): void {
     const snapshot = JSON.stringify([
       this.data,
       this.fileError,
@@ -237,13 +278,15 @@ export class Review implements vscode.Disposable {
       this.baseSha,
       this.targetSha,
       this.targetDir,
+      this.viewed(),
       [...this.blobs],
+      [...this.pendingViewed],
       [...this.positions],
-      [...this.sources],
+      this.sourcesVersion,
     ]);
     if (snapshot === this.snapshot) return;
     this.snapshot = snapshot;
-    this.changed.fire({ external: true });
+    this.changed.fire({ external });
   }
 
   async addThread(location: { file?: string; side?: 'base'; startLine?: number; endLine?: number }, body: string): Promise<void> {
@@ -317,7 +360,8 @@ export class Review implements vscode.Disposable {
   sinceViewedUris(file: ChangedFile): [vscode.Uri, vscode.Uri] | undefined {
     const seen = this.viewed()[file.path];
     if (!seen) return undefined;
-    const left = seen === DELETED ? this.gitUri(file.path) : this.gitUri(file.path, { blob: seen });
+    // Only regular files are stored when viewed; for symlinks and submodules the id is not a blob
+    const left = /^[0-9a-f]{40,64}$/.test(seen) ? this.gitUri(file.path, { blob: seen }) : this.gitUri(file.path);
     return [left, this.diffUris(file)[1]];
   }
 
@@ -365,6 +409,7 @@ export class Review implements vscode.Disposable {
   setViewed(files: ChangedFile[], viewed: boolean): Promise<void> {
     // Show the new state right away, so a refresh that finishes first does not briefly undo the checkbox.
     for (const f of files) this.pendingViewed.set(f.path, viewed);
+    let saved = false;
     return this.enqueue(async () => {
       try {
         const all = { ...this.viewed() };
@@ -379,12 +424,14 @@ export class Review implements vscode.Disposable {
           for (const f of files) delete all[f.path];
         }
         await this.state.update(this.viewedKey, all);
+        saved = true;
       } finally {
         for (const f of files) {
           if (this.pendingViewed.get(f.path) === viewed) this.pendingViewed.delete(f.path);
         }
-        this.snapshot = undefined;
-        this.changed.fire({ external: false });
+        // A failed save leaves nothing different to show, but the checkbox that was clicked needs to be put back
+        if (!saved) this.snapshot = undefined;
+        this.announce(false);
       }
     });
   }
@@ -392,6 +439,7 @@ export class Review implements vscode.Disposable {
   dispose(): void {
     this.disposed = true;
     clearTimeout(this.timer);
+    this.shown.clear();
     clearTimeout(this.editTimer);
     if (this.hintTimer) {
       clearTimeout(this.hintTimer);
@@ -424,13 +472,21 @@ export class Review implements vscode.Disposable {
 
   private async loadChanges(): Promise<void> {
     const { base, target } = this.data;
-    const targetSha = target ? await revParse(this.root, target) : undefined;
-    const dir = target ? (await worktrees(this.root)).get(target) : this.root;
-    const targetDir = target && dir === this.root ? undefined : dir;
-    if (targetSha !== this.targetSha) contentProvider.refreshOpen();
-    this.targetSha = targetSha;
-    this.baseSha = await mergeBase(this.root, base, targetSha ?? 'HEAD');
-    this.files = (await changedFiles(this.root, this.baseSha, { ref: targetDir ? undefined : targetSha, dir: targetDir })).sort((a, b) =>
+    let targetDir = this.targetDir;
+    // Branches only move with a write in .git, so edits to the code don't need git to look them up again
+    const pair = `${base}\n${target}`;
+    if (this.refsChanged || pair !== this.pair || Date.now() - this.refsChecked > REFS_TTL) {
+      const targetSha = target ? await revParse(this.root, target) : undefined;
+      const dir = target ? (await worktrees(this.root)).get(target) : this.root;
+      targetDir = target && dir === this.root ? undefined : dir;
+      if (targetSha !== this.targetSha) contentProvider.refreshOpen();
+      this.targetSha = targetSha;
+      this.baseSha = await mergeBase(this.root, base, targetSha ?? 'HEAD');
+      this.pair = pair;
+      this.refsChanged = false;
+      this.refsChecked = Date.now();
+    }
+    this.files = (await changedFiles(this.root, this.baseSha, { ref: targetDir ? undefined : this.targetSha, dir: targetDir })).sort((a, b) =>
       a.path.localeCompare(b.path),
     );
     this.changesError = undefined;
@@ -485,8 +541,7 @@ export class Review implements vscode.Disposable {
         doc = new ReviewDocument(text, { roots: this.roots() });
       } catch (e) {
         this.fileError = fileError(e as Error, text);
-        this.snapshot = undefined;
-        this.changed.fire({ external: false });
+        this.announce(false);
         throw new Error(`${path.basename(this.filePath)} ${describeFileError(this.fileError)}, so the change was not saved.`);
       }
       edit(doc);
@@ -496,8 +551,8 @@ export class Review implements vscode.Disposable {
       this.read(next);
       await this.reanchor(new Set());
       this.remember();
-      this.snapshot = undefined;
-      this.changed.fire({ external: false });
+      // The file watcher reports this write too; by then there is nothing new to show
+      this.announce(false);
     });
   }
 
@@ -530,23 +585,60 @@ export class Review implements vscode.Disposable {
 
   private watch(dir: string): vscode.FileSystemWatcher {
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '**/*'));
-    // Git writes to .git all the time (objects, logs); only refs, the index, excludes and worktrees affect the review.
-    const schedule = (uri: vscode.Uri) => {
-      const rel = path.relative(dir, uri.fsPath).split(path.sep).join('/');
-      const relevant = /^\.git\/(HEAD$|packed-refs$|index$|info\/exclude$|refs\/|reftable\/|worktrees\/[^/]+(\/(HEAD|index))?$)/;
-      if (rel.startsWith('.git/') && !relevant.test(rel)) return;
-      this.scheduleRefresh();
-    };
-    watcher.onDidChange(schedule);
-    watcher.onDidCreate(schedule);
-    watcher.onDidDelete(schedule);
+    const record = (uri: vscode.Uri) => this.record(dir, uri);
+    watcher.onDidChange(record);
+    watcher.onDidCreate(record);
+    watcher.onDidDelete(record);
     return watcher;
   }
 
-  private scheduleRefresh(): void {
+  // Notes what a file event can change. Only the worktree under review shows uncommitted changes; a branch
+  // that isn't checked out only changes with writes in .git.
+  private record(dir: string, uri: vscode.Uri): void {
     if (this.disposed) return;
+    const rel = path.relative(dir, uri.fsPath).split(path.sep).join('/');
+    if (uri.fsPath === this.filePath) this.events.review = true;
+    else if (dir === this.root && rel.startsWith('.git/')) {
+      if (!GIT_STATE.test(rel)) return;
+      if (rel === '.git/info/exclude') this.ignored.clear();
+      this.events.git = true;
+    } else {
+      const file = this.targetDir && path.relative(this.targetDir, uri.fsPath).split(path.sep).join('/');
+      if (!file || file.startsWith('..') || path.isAbsolute(file) || /^(\.git|\.prereview)(\/|$)/.test(file)) return;
+      if (/(^|\/)\.gitignore$/.test(file)) this.ignored.clear();
+      if (this.ignored.get(file)) return;
+      this.events.paths.add(file);
+    }
+    this.schedule();
+  }
+
+  // Waits for a pause in file activity, but not indefinitely, and longer when refreshing is slow
+  private schedule(): void {
+    const now = Date.now();
+    if (!this.timer) this.firstEvent = now;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.refresh(), 300);
+    const pause = Math.max(300, this.cost * 2);
+    const longest = Math.max(1500, this.cost * 4);
+    this.timer = setTimeout(() => void this.flush(), Math.max(0, Math.min(pause, this.firstEvent + longest - now)));
+  }
+
+  private async flush(): Promise<void> {
+    this.timer = undefined;
+    const { git, review, paths } = this.events;
+    this.events = { git: false, review: false, paths: new Set() };
+    const unknown = [...paths].filter((file) => !this.ignored.has(file));
+    if (unknown.length && this.targetDir) {
+      const ignored = await ignoredPaths(this.targetDir, unknown);
+      if (this.ignored.size > 5000) this.ignored.clear();
+      for (const file of unknown) this.ignored.set(file, ignored.has(file));
+    }
+    if (this.disposed) return;
+    const code = git || [...paths].some((file) => this.ignored.get(file) === false);
+    if (git) this.refsChanged = true;
+    // In the background, only the review file is read, so agent replies still show up and notify
+    if (code && !vscode.window.state.focused) this.stale = true;
+    else if (code) return void this.queueRefresh();
+    if (review) void this.reload();
   }
 
   // Threads move with the code while it is edited, before it is saved
@@ -560,9 +652,7 @@ export class Review implements vscode.Disposable {
       const edits = this.edits;
       this.edits = new Set();
       void this.enqueue(async () => {
-        if (this.disposed || !(await this.reanchor(edits))) return;
-        this.snapshot = undefined;
-        this.changed.fire({ external: false });
+        if (!this.disposed && (await this.reanchor(edits))) this.announce(false);
       });
     }, 150);
   }
@@ -581,10 +671,9 @@ export class Review implements vscode.Disposable {
       }
       positions.set(t.id, this.anchor(t, this.sources.get(key), sources.get(key)));
     }
-    const changed =
-      !samePositions(positions, this.positions) ||
-      sources.size !== this.sources.size ||
-      [...sources].some(([key, source]) => source?.text !== this.sources.get(key)?.text);
+    const read = sources.size !== this.sources.size || [...sources].some(([key, source]) => source?.text !== this.sources.get(key)?.text);
+    const changed = read || !samePositions(positions, this.positions);
+    if (read) this.sourcesVersion++;
     this.sources = sources;
     this.positions = positions;
     if (changed) {
@@ -630,16 +719,28 @@ export class Review implements vscode.Disposable {
 
   private async text(file: string, side?: 'base'): Promise<string | undefined> {
     try {
-      if (side === 'base') return await show(this.root, this.baseSha, this.oldPath(file));
+      if (side === 'base') return await this.show(this.baseSha, this.oldPath(file));
       if (this.targetDir) {
         const uri = vscode.Uri.file(path.join(this.targetDir, file));
         const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
         return doc?.isDirty ? doc.getText() : await fs.readFile(uri.fsPath, 'utf8');
       }
-      return await show(this.root, this.data.target!, file);
+      return await this.show(this.targetSha ?? this.data.target!, file);
     } catch {
       return undefined;
     }
+  }
+
+  // A file at a commit never changes, so it is only asked from git once
+  private async show(sha: string, file: string): Promise<string> {
+    const key = `${sha}:${file}`;
+    let text = this.shown.get(key);
+    if (text === undefined) {
+      text = await show(this.root, sha, file);
+      if (this.shown.size >= 200) this.shown.clear();
+      this.shown.set(key, text);
+    }
+    return text;
   }
 
   private oldPath(file: string): string {

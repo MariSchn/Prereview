@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
-import { catBlob, changedFiles, git, hashObjects, mergeBase, parseNumstat, parseRaw, parseWorktrees, revParse, show } from '../git';
+import { catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, parseNumstat, parseRaw, parseWorktrees, revParse, show } from '../git';
 
 const SHA = 'a'.repeat(40);
 const ZERO = '0'.repeat(40);
@@ -98,5 +98,86 @@ test('changedFiles covers committed, working tree and worktree changes', async (
   );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function tempRepo(files: Record<string, string>) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'prereview-')));
+  const write = (file: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  await git(root, ['init', '-q', '-b', 'main']);
+  await git(root, ['config', 'user.email', 't@t']);
+  await git(root, ['config', 'user.name', 't']);
+  for (const [file, text] of Object.entries(files)) write(file, text);
+  await git(root, ['add', '.']);
+  await git(root, ['commit', '-qm', 'base']);
+  return { root, write, base: (await git(root, ['rev-parse', 'HEAD'])).trim(), cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('changedFiles lists a file that was removed from the index and written again once', async () => {
+  const r = await tempRepo({ 'util.ts': 'one\ntwo\n', 'keep.ts': 'x\n' });
+  try {
+    await git(r.root, ['rm', '-q', 'util.ts']);
+    r.write('util.ts', 'one\ntwo\nthree\n');
+    assert.deepStrictEqual(await changedFiles(r.root, r.base, { dir: r.root }), [
+      { path: 'util.ts', oldPath: 'util.ts', status: 'M', blob: undefined, added: 3, deleted: 2 },
+    ]);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a working-tree diff leaves the index alone, so it never holds index.lock', async () => {
+  const files = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`f${i}.txt`, `${i}\n`]));
+  const r = await tempRepo(files);
+  try {
+    const index = path.join(r.root, '.git', 'index');
+    const before = fs.statSync(index).mtimeMs;
+    // Rewriting files with the same content makes git refresh their stats in the index it reads
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    for (const [file, text] of Object.entries(files)) r.write(file, text);
+    assert.deepStrictEqual(await changedFiles(r.root, r.base, { dir: r.root }), []);
+    assert.strictEqual(fs.statSync(index).mtimeMs, before);
+    assert.deepStrictEqual(fs.readdirSync(path.join(r.root, '.git')).filter((f) => f.startsWith('prereview-index')), []);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('hashObjects gives every file an id, even when some of them git cannot hash', async (t) => {
+  const r = await tempRepo({ 'a.txt': 'a\n' });
+  try {
+    try {
+      fs.symlinkSync('missing.txt', path.join(r.root, 'dangling'));
+      fs.symlinkSync('.git', path.join(r.root, 'dir-link'));
+    } catch {
+      return t.skip('symlinks are not available');
+    }
+    const [blob] = await hashObjects(r.root, ['a.txt'], false);
+    assert.deepStrictEqual(await hashObjects(r.root, ['a.txt', 'dangling', 'dir-link', 'gone.txt'], true), [blob, 'link:missing.txt', 'link:.git', undefined]);
+    assert.strictEqual(await catBlob(r.root, blob!), 'a\n');
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('git stops a call that runs past its timeout', async () => {
+  const r = await tempRepo({ 'a.txt': 'a\n' });
+  try {
+    await assert.rejects(git(r.root, ['-c', 'alias.wait=!sleep 5', 'wait'], undefined, { timeout: 300 }), /did not finish within 0.3 seconds/);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('ignoredPaths finds the paths git ignores', async () => {
+  const r = await tempRepo({ '.gitignore': '*.log\nbuild/\n', 'a.txt': 'a\n' });
+  try {
+    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['server.log', 'build/out.js', 'a.txt', 'new.ts']))].sort(), ['build/out.js', 'server.log']);
+    assert.deepStrictEqual([...(await ignoredPaths(r.root, ['a.txt']))], []);
+  } finally {
+    r.cleanup();
   }
 });
