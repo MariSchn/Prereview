@@ -25,6 +25,7 @@ export class Controller implements vscode.Disposable {
   private readonly statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   private readonly disposables: vscode.Disposable[];
   private listener?: vscode.Disposable;
+  private repositoryWatcher?: vscode.FileSystemWatcher;
   private counts = countStatuses([]);
   // Counts the reviews asked to open, so a slow one that finishes late doesn't replace a later choice
   private opening = 0;
@@ -60,7 +61,10 @@ export class Controller implements vscode.Disposable {
           this.overview.restore(panel);
         },
       }),
-      vscode.window.onDidChangeActiveTextEditor((editor) => this.reveal(editor?.document.uri)),
+      vscode.window.onDidChangeActiveTextEditor((editor) => {
+        this.reveal(editor?.document.uri);
+        this.updateActiveFile();
+      }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.findRepository()),
       this.tree.onDidChangeCheckboxState(async (event) => {
         try {
@@ -81,11 +85,13 @@ export class Controller implements vscode.Disposable {
 
   dispose(): void {
     for (const disposable of this.disposables) disposable.dispose();
+    this.repositoryWatcher?.dispose();
   }
 
   // Opens a review file, unless another review was asked for while it loaded
   async open(filePath: string): Promise<Review | undefined> {
     const ticket = ++this.opening;
+    if (filePath === this.review?.filePath) return this.review;
     const next = await Review.load(filePath, this.context.workspaceState);
     if (ticket !== this.opening) {
       next.dispose();
@@ -113,6 +119,13 @@ export class Controller implements vscode.Disposable {
     const root = folder && (await repoRoot(folder.uri.fsPath).catch(() => undefined));
     void vscode.commands.executeCommand('setContext', 'prereview.noRepository', !!folder && !root);
     if (root) this.reviews.setRoot(root);
+    this.repositoryWatcher?.dispose();
+    this.repositoryWatcher = undefined;
+    // A repository created in the folder, such as with Initialize Repository, shows up as a .git folder
+    if (folder && !root) {
+      this.repositoryWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git'));
+      this.repositoryWatcher.onDidCreate(() => void this.findRepository());
+    }
   }
 
   private setReview(next: Review | undefined): void {
@@ -166,6 +179,7 @@ export class Controller implements vscode.Disposable {
     }
     this.counts = next;
     this.updateViewedContext();
+    this.updateActiveFile();
     const noFiles = !!review && review.files.length === 0;
     const clean = noFiles && !review.changesError && review.data.threads.length === 0;
     const setContext = (key: string, value: unknown) => vscode.commands.executeCommand('setContext', key, value);
@@ -188,6 +202,15 @@ export class Controller implements vscode.Disposable {
     void vscode.commands.executeCommand('setContext', 'prereview.viewedDocuments', documents.viewed);
     void vscode.commands.executeCommand('setContext', 'prereview.unviewedDocuments', documents.unviewed);
     void vscode.commands.executeCommand('setContext', 'prereview.updatedDocuments', documents.updated);
+  }
+
+  // A multi-diff editor's title bar has the multi-diff itself as its resource, so there the viewed buttons
+  // follow the file with the focus
+  private updateActiveFile(): void {
+    const file = this.activeFile();
+    const state = file && this.review?.viewState(file);
+    void vscode.commands.executeCommand('setContext', 'prereview.activeFile', state && (state === 'viewed' ? 'viewed' : 'unviewed'));
+    void vscode.commands.executeCommand('setContext', 'prereview.activeFileUpdated', state === 'updated');
   }
 
   private updateBadge(): void {
@@ -232,7 +255,7 @@ export class Controller implements vscode.Disposable {
         if (filePath && (await this.open(filePath))) overview.show();
       }),
       command('prereview.switchReview', async (entry: ReviewEntry) => {
-        if (entry.filePath === this.review?.filePath || (await this.open(entry.filePath))) overview.show();
+        if (await this.open(entry.filePath)) overview.show();
       }),
       command('prereview.openOverview', () => overview.show()),
       command('prereview.openDiff', (arg: FileItem | ChangedFile) => {
@@ -241,7 +264,8 @@ export class Controller implements vscode.Disposable {
       }),
       command('prereview.openFile', (arg?: FileItem | ChangedFile) => {
         const file = this.fileArg(arg);
-        if (this.review && file) return vscode.window.showTextDocument(this.review.headUri(file.path));
+        // A deleted file is only there in its old version
+        if (this.review && file) return vscode.window.showTextDocument(file.status === 'D' ? this.review.baseUri(file.path) : this.review.headUri(file.path));
       }),
       command('prereview.copyFilePath', (arg?: FileItem | ChangedFile) => {
         const file = this.fileArg(arg);

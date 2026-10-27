@@ -32,7 +32,8 @@ The unit tests use `node:test`. They cover git commands and their parsing, the r
 
 ## Layout
 
-- `src/extension.ts`: activation, commands and the **Start Review** flow.
+- `src/extension.ts`: activation.
+- `src/controller.ts`: the active review and what shows it, the commands, and the **Start Review** flow.
 - `src/review.ts`: one review. It reads and writes the review file, asks git for the changed files, tracks viewed files and moves threads along with their code.
 - `src/model.ts`: the review file format and the instructions for agents that are written into every review file.
 - `src/git.ts`: git commands and the parsing of their output.

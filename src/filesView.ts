@@ -85,7 +85,7 @@ export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>
       .filter(Boolean)
       .join('\n');
     item.checkboxState = state === 'viewed' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
-    item.contextValue = state === 'updated' ? 'file-updated' : 'file';
+    item.contextValue = file.status === 'D' ? 'file-deleted' : state === 'updated' ? 'file-updated' : 'file';
     item.command = { command: 'prereview.openDiff', title: 'Open Diff', arguments: [node] };
     return item;
   }

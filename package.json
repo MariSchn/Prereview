@@ -354,7 +354,7 @@
         },
         {
           "command": "prereview.openFile",
-          "when": "view == prereview.files && viewItem =~ /^file/",
+          "when": "view == prereview.files && (viewItem == file || viewItem == file-updated)",
           "group": "inline@0"
         },
         {
@@ -364,7 +364,7 @@
         },
         {
           "command": "prereview.openFile",
-          "when": "view == prereview.files && viewItem =~ /^file/",
+          "when": "view == prereview.files && (viewItem == file || viewItem == file-updated)",
           "group": "1_open@2"
         },
         {
@@ -374,7 +374,7 @@
         },
         {
           "command": "prereview.revealInExplorer",
-          "when": "view == prereview.files && viewItem =~ /^file/",
+          "when": "view == prereview.files && (viewItem == file || viewItem == file-updated)",
           "group": "2_reveal@1"
         },
         {
@@ -411,17 +411,17 @@
       "editor/title": [
         {
           "command": "prereview.markViewed",
-          "when": "resource in prereview.unviewedDocuments",
+          "when": "resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == unviewed",
           "group": "navigation"
         },
         {
           "command": "prereview.markUnviewed",
-          "when": "resource in prereview.viewedDocuments",
+          "when": "resource in prereview.viewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == viewed",
           "group": "navigation"
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "resource in prereview.updatedDocuments",
+          "when": "resource in prereview.updatedDocuments || activeEditor == multiDiffEditor && prereview.activeFileUpdated",
           "group": "navigation"
         }
       ],
@@ -569,31 +569,19 @@
         },
         {
           "command": "prereview.markViewed",
-          "when": "resource in prereview.unviewedDocuments"
+          "when": "resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == unviewed"
         },
         {
           "command": "prereview.markUnviewed",
-          "when": "resource in prereview.viewedDocuments"
+          "when": "resource in prereview.viewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == viewed"
         },
         {
           "command": "prereview.openSinceViewed",
-          "when": "resource in prereview.updatedDocuments"
+          "when": "resource in prereview.updatedDocuments || activeEditor == multiDiffEditor && prereview.activeFileUpdated"
         },
         {
           "command": "prereview.openAllSinceViewed",
           "when": "prereview.hasUpdated"
-        }
-      ],
-      "commentsView/commentThread/context": [
-        {
-          "command": "prereview.resolve",
-          "group": "inline",
-          "when": "commentController == prereview && commentThread == unresolved"
-        },
-        {
-          "command": "prereview.unresolve",
-          "group": "inline",
-          "when": "commentController == prereview && commentThread == resolved"
         }
       ]
     }
