@@ -30,6 +30,11 @@ export function buildTree<T extends { path: string }>(files: T[]): TreeNode<T>[]
   return sort(root.children.map(compact));
 }
 
+// Files in tree order, with lock files and generated files at the end
+export function orderFiles<T extends { path: string; generated?: boolean }>(files: T[]): T[] {
+  return [...flatten(buildTree(files.filter((f) => !f.generated))), ...files.filter((f) => f.generated).sort((a, b) => a.path.localeCompare(b.path))];
+}
+
 export function flatten<T>(nodes: TreeNode<T>[]): T[] {
   return nodes.flatMap((n) => (n.kind === 'file' ? [n.file] : flatten(n.children)));
 }

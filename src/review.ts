@@ -1,12 +1,15 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChangedFile, catBlob, changedFiles, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktreeList, worktrees } from './git';
+import { ChangedFile, catBlob, changedFiles, generatedPaths, git, hashObjects, ignoredPaths, mergeBase, revParse, show, worktreeList, worktrees } from './git';
 import { listReviews } from './reviewsView';
 import {
+  AGENT_PROMPT,
+  Comment,
   FileError,
   REVIEWER,
   ReviewData,
+  agentPrompt,
   ReviewDocument,
   Thread,
   describeFileError,
@@ -20,6 +23,7 @@ import {
   readPair,
   reviewFilePath,
   serializeReview,
+  suggestions,
 } from './model';
 
 export const SCHEME = 'prereview';
@@ -77,6 +81,22 @@ function lastReadKey(filePath: string): string {
   return `prereview.lastRead:${filePath}`;
 }
 
+function seenKey(filePath: string): string {
+  return `prereview.seen:${filePath}`;
+}
+
+function readKey(filePath: string): string {
+  return `prereview.read:${filePath}`;
+}
+
+function commentedKey(filePath: string): string {
+  return `prereview.commented:${filePath}`;
+}
+
+function handoffKey(filePath: string): string {
+  return `prereview.handoff:${filePath}`;
+}
+
 // Finds the review file of a pair, in any worktree, or creates it, and returns its path. A review of a branch
 // checked out in another worktree goes in that worktree, where the agent working there may write it.
 export async function createReview(root: string, base: string, target: string | null): Promise<string> {
@@ -95,7 +115,8 @@ export async function createReview(root: string, base: string, target: string | 
 
 export async function deleteReview(filePath: string, state: vscode.Memento): Promise<void> {
   await fs.rm(filePath, { force: true });
-  for (const key of [viewedKey(filePath), anchorsKey(filePath), lastReadKey(filePath)]) await state.update(key, undefined);
+  const keys = [viewedKey, anchorsKey, lastReadKey, seenKey, readKey, commentedKey, handoffKey].map((key) => key(filePath));
+  for (const key of keys) await state.update(key, undefined);
 }
 
 export type Side = 'head' | 'base';
@@ -162,6 +183,17 @@ export class Review implements vscode.Disposable {
   private snapshot?: string;
   private pair?: string;
   private lastRead?: string;
+  // When Prereview first saw each agent comment without a time of its own; '' for the ones that were already
+  // there when the review was first opened
+  private seen?: Record<string, string>;
+  // When the reviewer last looked at each thread
+  private looked: Record<string, string>;
+  // The version of a thread's file when the reviewer last commented in it
+  private commented: Record<string, { file: string; id: string }>;
+  // The version of each file when the review was last handed to the agent
+  private handoff?: { at: string; ids: Record<string, string> };
+  private generated = new Set<string>();
+  private generatedFor?: string;
   files: ChangedFile[] = [];
   changesError?: string;
   // Set while the review file can't be read; `data` then still holds what was last read from it
@@ -178,6 +210,10 @@ export class Review implements vscode.Disposable {
     // A review kept in another worktree changes there, whatever that worktree has checked out
     this.fileWatcher = isInside(filePath, root) ? undefined : this.watch(path.dirname(filePath));
     this.hints = state.get<Record<string, [number, number]>>(anchorsKey(filePath)) ?? {};
+    this.seen = state.get(seenKey(filePath));
+    this.looked = state.get(readKey(filePath)) ?? {};
+    this.commented = state.get(commentedKey(filePath)) ?? {};
+    this.handoff = state.get(handoffKey(filePath));
     this.listeners = [
       vscode.workspace.onDidChangeTextDocument((e) => {
         if (e.contentChanges.length) this.edited(e.document.uri);
@@ -297,6 +333,8 @@ export class Review implements vscode.Disposable {
       this.targetSha,
       this.targetDir,
       this.viewed(),
+      this.looked,
+      this.handoff?.at,
       [...this.blobs],
       [...this.pendingViewed],
       [...this.positions],
@@ -311,18 +349,124 @@ export class Review implements vscode.Disposable {
     const { file, side, startLine, endLine } = location;
     const text = file && startLine !== undefined ? await this.text(file, side) : undefined;
     const snippet = text?.split(/\r?\n/).slice(startLine! - 1, endLine).join('\n');
-    return this.update((doc) => doc.addThread({ file, side, startLine, endLine, snippet }, newComment(body)));
+    let id = '';
+    await this.update((doc) => (id = doc.addThread({ file, side, startLine, endLine, snippet }, newComment(body))));
+    await this.noteCommented(id, file, side);
   }
 
-  reply(id: string, body: string, resolve = false): Promise<void> {
-    return this.update((doc) => {
+  async reply(id: string, body: string, resolve = false): Promise<void> {
+    await this.update((doc) => {
       doc.addComment(id, newComment(body));
       if (resolve) doc.setResolved(id, true);
     });
+    this.markRead([id]);
+    const thread = this.data.threads.find((t) => t.id === id);
+    await this.noteCommented(id, thread?.file, thread?.side);
   }
 
-  setResolved(id: string, resolved: boolean): Promise<void> {
-    return this.update((doc) => doc.setResolved(id, resolved));
+  async setResolved(id: string, resolved: boolean): Promise<void> {
+    await this.update((doc) => doc.setResolved(id, resolved));
+    this.markRead([id]);
+  }
+
+  // When a comment was written, or for an agent comment without a time, when Prereview first saw it
+  commentTime(thread: Thread, comment: Comment): string | undefined {
+    return comment.createdAt ?? (this.seen?.[commentKey(thread.id, comment.id)] || undefined);
+  }
+
+  // Whether an agent comment arrived since the reviewer last looked at its thread
+  isNew(thread: Thread, comment: Comment): boolean {
+    return comment.author !== REVIEWER && (this.commentTime(thread, comment) ?? '') > (this.looked[thread.id] ?? '');
+  }
+
+  unread(thread: Thread): number {
+    return thread.comments.filter((c) => this.isNew(thread, c)).length;
+  }
+
+  // Whether a suggestion in the thread can be applied: its lines are in a checked-out file and unchanged
+  canApply(thread: Thread): boolean {
+    return !!this.targetDir && !!thread.file && thread.side !== 'base' && this.position(thread)?.outdated === false;
+  }
+
+  // What to send the agent so it picks up the review, from the prereview.agentPrompt setting
+  prompt(): string {
+    return agentPrompt(vscode.workspace.getConfiguration('prereview').get<string>('agentPrompt') || AGENT_PROMPT, this.filePath);
+  }
+
+  markRead(ids: string[]): void {
+    const now = new Date().toISOString();
+    const unread = ids.filter((id) => {
+      const thread = this.data.threads.find((t) => t.id === id);
+      return thread && this.unread(thread);
+    });
+    if (!unread.length) return;
+    for (const id of unread) this.looked[id] = now;
+    void this.state.update(readKey(this.filePath), this.looked);
+    this.announce(false);
+  }
+
+  // Replaces a thread's lines with a comment's suggested code, saves the file and resolves the thread
+  async applySuggestion(threadId: string, commentId: string): Promise<void> {
+    const thread = this.data.threads.find((t) => t.id === threadId);
+    const code = suggestions(thread?.comments.find((c) => c.id === commentId)?.body ?? '')[0];
+    const pos = thread && this.position(thread);
+    if (!thread?.file || code === undefined || !pos) return;
+    if (!this.canApply(thread) || !this.targetDir) {
+      throw new Error(pos.outdated ? 'The lines this suggestion replaces have changed since. Apply it by hand.' : 'Suggestions can only be applied to checked-out files.');
+    }
+    const uri = vscode.Uri.file(path.join(this.targetDir, thread.file));
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const edit = new vscode.WorkspaceEdit();
+    // An empty suggestion removes the lines, line breaks included
+    const end = code || pos.end >= doc.lineCount ? doc.lineAt(pos.end - 1).range.end : new vscode.Position(pos.end, 0);
+    edit.replace(uri, new vscode.Range(pos.start - 1, 0, end.line, end.character), code);
+    if (!(await vscode.workspace.applyEdit(edit)) || !(await doc.save())) throw new Error(`Couldn't change ${thread.file}.`);
+    await this.reply(threadId, 'Applied the suggestion.', true);
+  }
+
+  // The version of a thread's file from when the reviewer last commented in it, next to the current one, if it changed since
+  sinceCommentUris(thread: Thread): [vscode.Uri, vscode.Uri] | undefined {
+    const at = this.commented[thread.id];
+    const file = at && this.files.find((f) => f.path === at.file);
+    if (!file || this.blobs.get(file.path) === at.id) return undefined;
+    return [this.gitUri(file.path, { blob: at.id }), this.diffUris(file)[1]];
+  }
+
+  // Notes every file as it is now, when the review goes to the agent, to show later what the agent changed
+  async handOff(): Promise<void> {
+    await this.syncLines();
+    const ids = await this.blobsOf(this.files, true);
+    this.files.forEach((f, i) => ids[i] && this.blobs.set(f.path, ids[i]!));
+    this.handoff = { at: new Date().toISOString(), ids: Object.fromEntries(this.files.map((f, i) => [f.path, ids[i] ?? ''])) };
+    await this.state.update(handoffKey(this.filePath), this.handoff);
+    this.announce(false);
+  }
+
+  get handedOff(): string | undefined {
+    return this.handoff?.at;
+  }
+
+  // Files the agent changed since the review was last handed to it
+  changedSinceHandoff(): ChangedFile[] {
+    const handoff = this.handoff;
+    return handoff ? this.files.filter((f) => this.blobs.get(f.path) !== handoff.ids[f.path]) : [];
+  }
+
+  sinceHandoffUris(file: ChangedFile): [vscode.Uri, vscode.Uri] | undefined {
+    if (!this.handoff) return undefined;
+    const id = this.handoff.ids[file.path];
+    const left = id && /^[0-9a-f]{40,64}$/.test(id) ? this.gitUri(file.path, { blob: id }) : this.gitUri(file.path);
+    return [left, this.diffUris(file)[1]];
+  }
+
+  private async noteCommented(threadId: string, file?: string, side?: 'base'): Promise<void> {
+    const changed = file && side !== 'base' && this.files.find((f) => f.path === file);
+    if (!changed) return;
+    const [id] = await this.blobsOf([changed], true);
+    if (!id || id === DELETED) return;
+    this.commented[threadId] = { file: changed.path, id };
+    this.blobs.set(changed.path, id);
+    await this.state.update(commentedKey(this.filePath), this.commented);
   }
 
   editComment(threadId: string, commentId: string, body: string): Promise<void> {
@@ -528,8 +672,16 @@ export class Review implements vscode.Disposable {
       this.targetWatcher?.dispose();
       this.targetWatcher = !this.disposed && targetDir && !isInside(targetDir, this.root) ? this.watch(targetDir) : undefined;
     }
+    const paths = this.files.map((f) => f.path);
+    if (paths.join('\n') !== this.generatedFor) {
+      this.generated = await generatedPaths(this.targetDir ?? this.root, paths).catch(() => new Set<string>());
+      this.generatedFor = paths.join('\n');
+    }
+    for (const f of this.files) if (this.generated.has(f.path)) f.generated = true;
+    // Versions are only needed of viewed files, files with threads to compare, and after a hand-off, of all
     const viewed = this.viewed();
-    const tracked = this.files.filter((f) => viewed[f.path]);
+    const commented = new Set(Object.values(this.commented).map((c) => c.file));
+    const tracked = this.files.filter((f) => viewed[f.path] || commented.has(f.path) || this.handoff);
     const blobs = new Map<string, string>();
     if (this.targetDir) {
       const present = tracked.filter((f) => f.status !== 'D');
@@ -547,9 +699,27 @@ export class Review implements vscode.Disposable {
     try {
       this.data = parseReview(text, { roots: this.roots() });
       this.fileError = undefined;
+      this.note();
     } catch (e) {
       this.fileError = fileError(e as Error, text);
     }
+  }
+
+  // Notes when agent comments without a time of their own show up
+  private note(): void {
+    const first = !this.seen;
+    const seen = (this.seen ??= {});
+    const now = new Date().toISOString();
+    let changed = first;
+    for (const t of this.data.threads) {
+      for (const c of t.comments) {
+        const key = commentKey(t.id, c.id);
+        if (c.author === REVIEWER || c.createdAt || key in seen) continue;
+        seen[key] = first ? '' : now;
+        changed = true;
+      }
+    }
+    if (changed) void this.state.update(seenKey(this.filePath), seen);
   }
 
   // Folders an agent's absolute paths may point into, the target's worktree first since it can be inside the repository
@@ -810,4 +980,8 @@ function samePositions(a: Map<string, Position>, b: Map<string, Position>): bool
 
 function newComment(body: string) {
   return { id: newId(), author: REVIEWER, body, createdAt: new Date().toISOString() };
+}
+
+function commentKey(threadId: string, commentId: string): string {
+  return `${threadId}\n${commentId}`;
 }

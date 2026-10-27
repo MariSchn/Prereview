@@ -6,6 +6,10 @@ import { test } from 'node:test';
 import {
   REVIEWER,
   ReviewDocument,
+  agentPrompt,
+  commentKind,
+  suggestions,
+  withoutSuggestions,
   fileError,
   follow,
   locate,
@@ -304,4 +308,19 @@ test('reviewMarkdown writes a review out with the lines its threads are on', () 
       '',
     ].join('\n'),
   );
+});
+
+test('commentKind reads a nit:, question: or blocking: prefix', () => {
+  assert.deepStrictEqual(['nit: rename', 'Question: why?', ' blocking: leaks', 'nitpick', 'a nit: no'].map(commentKind), ['nit', 'question', 'blocking', undefined, undefined]);
+});
+
+test('suggestions reads the replacement code of suggestion blocks, also an empty one', () => {
+  const body = 'Simpler:\n```suggestion\nconst x = 1;\nconst y = 2;\n```\nand drop this:\n````suggestion\n````\n```ts\nnot one\n```';
+  assert.deepStrictEqual(suggestions(body), ['const x = 1;\nconst y = 2;', '']);
+  assert.strictEqual(withoutSuggestions(body), 'Simpler:\n\nand drop this:\n\n```ts\nnot one\n```');
+});
+
+test('agentPrompt puts the review path in the prompt', () => {
+  assert.strictEqual(agentPrompt('Address ${path} now. (${path})', '/r/.prereview/x.json'), 'Address /r/.prereview/x.json now. (/r/.prereview/x.json)');
+  assert.strictEqual(agentPrompt('Review this:', '/x.json'), 'Review this: /x.json');
 });

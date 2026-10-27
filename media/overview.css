@@ -918,6 +918,11 @@ body.vscode-high-contrast .thread:hover {
   color: var(--muted);
 }
 
+.card-head button.icon-button {
+  margin: -2px -2px -2px 0;
+  padding: 0;
+}
+
 .card-head button:not(.plain):hover {
   color: var(--fg);
 }
@@ -1224,6 +1229,97 @@ button.location:focus-visible {
 .comment:hover .comment-actions,
 .comment:focus-within .comment-actions {
   opacity: 1;
+}
+
+.handoff {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.handoff .terminal-button {
+  width: 28px;
+  height: 28px;
+}
+
+.pill.new {
+  border-color: color-mix(in srgb, var(--agent) 60%, var(--border));
+  background: color-mix(in srgb, var(--agent) 14%, transparent);
+  color: var(--fg);
+}
+
+.pill.comment-kind.blocking {
+  border-color: color-mix(in srgb, var(--deleted) 70%, var(--border));
+}
+
+.pill.comment-kind.question {
+  border-color: color-mix(in srgb, var(--reviewer) 60%, var(--border));
+}
+
+.comment-head .pill {
+  padding: 0 6px;
+}
+
+/* Suggested changes */
+
+.suggestion {
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.suggestion-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 4px 2px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.92em;
+}
+
+.suggestion-head button {
+  height: 24px;
+}
+
+.suggestion .snippet {
+  border-bottom: none;
+}
+
+.suggestion .line.removed {
+  background: var(--removed-line);
+}
+
+.suggestion .line.added {
+  background: color-mix(in srgb, var(--vscode-diffEditor-insertedLineBackground, rgba(155, 185, 85, 0.2)) 70%, transparent);
+}
+
+.suggestion .ln {
+  min-width: 1em;
+  padding: 0 8px;
+  text-align: center;
+}
+
+body.vscode-high-contrast .suggestion .line.removed {
+  text-decoration: line-through;
+}
+
+/* Mentions of changed files in comments */
+
+.mention {
+  color: var(--vscode-textLink-foreground);
+}
+
+.markdown .mention code {
+  color: var(--vscode-textLink-foreground);
+}
+
+.mention:hover code {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* Markdown */

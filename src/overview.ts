@@ -1,8 +1,20 @@
 import { randomBytes } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { buildTree, flatten } from './fileTree';
-import { REVIEWER, Thread, ThreadStatus, authorName, countStatuses, describeFileError, threadStatus } from './model';
+import { orderFiles } from './fileTree';
+import {
+  CommentKind,
+  REVIEWER,
+  Thread,
+  ThreadStatus,
+  authorName,
+  commentKind,
+  countStatuses,
+  describeFileError,
+  suggestions,
+  threadStatus,
+  withoutSuggestions,
+} from './model';
 import { Position, Review } from './review';
 
 interface CommentView {
@@ -10,8 +22,12 @@ interface CommentView {
   author: string;
   mine: boolean;
   time?: string;
+  isNew: boolean;
+  kind?: CommentKind;
   html: string;
   body?: string;
+  // A suggested change: the lines it replaces and the lines it puts there
+  suggestion?: { removed: string[]; added: string[] };
 }
 
 interface ThreadView {
@@ -24,10 +40,14 @@ interface ThreadView {
   snippet?: { start: number; focus: [number, number]; lines: string[] };
   comments: CommentView[];
   unreadable?: number;
+  kind?: CommentKind;
+  unread: number;
+  canApply: boolean;
+  sinceComment: boolean;
 }
 
 export const VIEW_TYPE = 'prereview.overview';
-const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'finishReview', 'refresh'];
+const COMMANDS = ['openAllChanges', 'openAllSinceViewed', 'openSinceHandoff', 'openUnviewedChanges', 'finishReview', 'refresh'];
 const CONTEXT = 2;
 
 export async function confirmDelete(): Promise<boolean> {
@@ -137,9 +157,27 @@ export class Overview implements vscode.Disposable {
         return this.update();
       case 'open': {
         const thread = review.data.threads.find((t) => t.id === message.id);
-        if (thread) await this.openThread(thread);
+        if (!thread) return;
+        await this.openThread(thread);
+        review.markRead([thread.id]);
         return;
       }
+      case 'copyPrompt':
+        await review.handOff();
+        return vscode.env.clipboard.writeText(review.prompt());
+      case 'sendToTerminal':
+        return vscode.commands.executeCommand('prereview.sendToTerminal');
+      case 'applySuggestion':
+        return review.applySuggestion(message.id, message.commentId);
+      case 'openPath':
+        if (typeof message.path !== 'string') return;
+        await vscode.commands.executeCommand('prereview.openPath', message.path, typeof message.line === 'number' ? message.line : undefined);
+        return;
+      case 'seen':
+        if (Array.isArray(message.ids)) review.markRead(message.ids.filter((id: unknown): id is string => typeof id === 'string'));
+        return;
+      case 'sinceComment':
+        return vscode.commands.executeCommand('prereview.openSinceComment', message.id, { beside: true });
       case 'reply':
         if (body) await review.reply(message.id, body, message.resolve === true);
         return;
@@ -158,7 +196,7 @@ export class Overview implements vscode.Disposable {
         if (COMMANDS.includes(message.name)) await vscode.commands.executeCommand(`prereview.${message.name}`);
         return;
       case 'copyPath':
-        await review.syncLines();
+        await review.handOff();
         return vscode.env.clipboard.writeText(review.filePath);
       case 'openReviewFile':
         return vscode.commands.executeCommand('prereview.openReviewFile');
@@ -212,16 +250,26 @@ export class Overview implements vscode.Disposable {
         base: t.side === 'base',
         snippet,
         comments: await Promise.all(
-          t.comments.map(async (c) => ({
-            id: c.id,
-            author: authorName(c.author),
-            mine: c.author === REVIEWER,
-            time: c.createdAt,
-            html: await this.markdown(c.body),
-            body: c.author === REVIEWER ? c.body : undefined,
-          })),
+          t.comments.map(async (c) => {
+            const suggested = c.author === REVIEWER ? suggestions(c.body)[0] : undefined;
+            return {
+              id: c.id,
+              author: authorName(c.author),
+              mine: c.author === REVIEWER,
+              time: review.commentTime(t, c),
+              isNew: review.isNew(t, c),
+              kind: commentKind(c.body),
+              html: await this.markdown(suggested === undefined ? c.body : withoutSuggestions(c.body)),
+              body: c.author === REVIEWER ? c.body : undefined,
+              suggestion: suggested === undefined ? undefined : { removed: replaced(review, t, pos), added: suggested.split('\n') },
+            };
+          }),
         ),
         unreadable: t.unreadable,
+        kind: commentKind(t.comments[0]?.body ?? ''),
+        unread: review.unread(t),
+        canApply: review.canApply(t),
+        sinceComment: !!review.sinceCommentUris(t),
       });
     }
     const { data } = review;
@@ -232,7 +280,7 @@ export class Overview implements vscode.Disposable {
       base: data.base,
       target: review.targetLabel,
       worktree: data.target && review.targetDir ? review.targetDir : undefined,
-      files: flatten(buildTree(review.files)).map((f) => ({
+      files: orderFiles(review.files).map((f) => ({
         path: f.path,
         oldPath: f.oldPath,
         status: f.status,
@@ -248,6 +296,7 @@ export class Overview implements vscode.Disposable {
       fileError: review.fileError && `${path.basename(review.filePath)} ${describeFileError(review.fileError)}.`,
       unreadable: data.unreadable,
       description: data.description ? await this.markdown(data.description) : undefined,
+      handoff: review.handedOff && { at: review.handedOff, changed: review.changedSinceHandoff().length },
       threads,
     };
   }
@@ -292,6 +341,12 @@ function splitLines(html: string): string[] {
     }
     return prefix + line + '</span>'.repeat(open.length);
   });
+}
+
+// The lines a suggestion in the thread would replace: where the thread is now, or the code it was left on
+function replaced(review: Review, thread: Thread, pos: Position | undefined): string[] {
+  const lines = pos && !pos.outdated ? review.source(thread)?.slice(pos.start - 1, pos.end) : undefined;
+  return lines ?? thread.snippet?.split('\n') ?? [];
 }
 
 function where(thread: Thread, pos: Position | undefined): string {

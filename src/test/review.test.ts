@@ -532,3 +532,72 @@ test('worktrees without a review are suggested, except the one with the default 
     r.cleanup();
   }
 });
+
+test('agent replies are new until their thread is looked at, and replies already there are not', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const state = new fake.Memento();
+    const review = await Review.open(r.root, 'main', null, state);
+    await review.addThread({}, 'first');
+    await review.addThread({}, 'second');
+    const data = onDisk(review);
+    data.threads[0].comments.push({ author: 'agent', body: 'answer' });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    await review.refresh();
+    const [first, second] = review.data.threads;
+    assert.deepStrictEqual([review.unread(first), review.unread(second)], [1, 0]);
+    assert.ok(review.commentTime(first, first.comments[1]));
+    review.markRead([first.id]);
+    assert.strictEqual(review.unread(first), 0);
+    review.dispose();
+    // A review opened for the first time doesn't count replies that were already there as new
+    const fresh = await Review.load(review.filePath, new fake.Memento(), r.root);
+    assert.deepStrictEqual([fresh.unread(fresh.data.threads[0]), fresh.commentTime(fresh.data.threads[0], fresh.data.threads[0].comments[1])], [0, undefined]);
+    fresh.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a suggestion is applied to the lines its thread is on, and the thread is resolved', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('a', 'b', 'c', 'd'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 2, endLine: 3 }, 'Simpler:\n```suggestion\nbc\n```');
+    const [t] = review.data.threads;
+    assert.ok(review.canApply(t));
+    await review.applySuggestion(t.id, t.comments[0].id);
+    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('a', 'bc', 'd'));
+    assert.deepStrictEqual([review.data.threads[0].resolved, review.data.threads[0].comments[1].body], [true, 'Applied the suggestion.']);
+    fake.workspace.textDocuments.length = 0;
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('what changed since a comment and since the hand-off is kept, and lock files are marked', async () => {
+  const r = await repo({ 'a.ts': lines('one'), 'b.ts': lines('x') });
+  try {
+    r.write('a.ts', lines('one', 'two'));
+    r.write('package-lock.json', '{}\n');
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 2, endLine: 2 }, 'why two?');
+    await review.handOff();
+    assert.deepStrictEqual([review.sinceCommentUris(review.data.threads[0]), review.changedSinceHandoff()], [undefined, []]);
+    r.write('a.ts', lines('one', 'two', 'three'));
+    r.write('b.ts', lines('y'));
+    await review.refresh();
+    const [before] = review.sinceCommentUris(review.data.threads[0])!;
+    assert.strictEqual(await contentProvider.provideTextDocumentContent(before as any), lines('one', 'two'));
+    assert.deepStrictEqual(review.changedSinceHandoff().map((f) => f.path), ['a.ts', 'b.ts']);
+    const [handedOff] = review.sinceHandoffUris(review.files.find((f) => f.path === 'b.ts')!)!;
+    assert.strictEqual(await contentProvider.provideTextDocumentContent(handedOff as any), '');
+    assert.deepStrictEqual(review.files.filter((f) => f.generated).map((f) => f.path), ['package-lock.json']);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});

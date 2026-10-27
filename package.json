@@ -145,6 +145,73 @@
         "icon": "$(markdown)"
       },
       {
+        "command": "prereview.copyPrompt",
+        "title": "Copy Prompt for Agent",
+        "category": "Prereview",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "prereview.sendToTerminal",
+        "title": "Send to Agent Terminal",
+        "category": "Prereview",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "prereview.markViewedAndNext",
+        "title": "Mark as Viewed and Open Next File",
+        "category": "Prereview",
+        "icon": "$(check)"
+      },
+      {
+        "command": "prereview.nextThread",
+        "title": "Go to Next Open Thread",
+        "category": "Prereview",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "prereview.previousThread",
+        "title": "Go to Previous Open Thread",
+        "category": "Prereview",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "prereview.openSinceHandoff",
+        "title": "Open Changes Since Hand-Off",
+        "category": "Prereview",
+        "icon": "$(history)"
+      },
+      {
+        "command": "prereview.openUnviewedChanges",
+        "title": "Open Changes Not Yet Viewed",
+        "category": "Prereview",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "prereview.hideViewedFiles",
+        "title": "Hide Viewed Files",
+        "category": "Prereview",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "prereview.showViewedFiles",
+        "title": "Show Viewed Files",
+        "category": "Prereview",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "prereview.openSinceComment",
+        "title": "Show Changes Since My Comment",
+        "icon": "$(history)"
+      },
+      {
+        "command": "prereview.applySuggestion",
+        "title": "Apply Suggestion"
+      },
+      {
+        "command": "prereview.openPath",
+        "title": "Open Mentioned File"
+      },
+      {
         "command": "prereview.openReviewFile",
         "title": "Open Review File",
         "category": "Prereview",
@@ -279,6 +346,24 @@
         "args": {
           "snippet": "`${1:$TM_SELECTED_TEXT}`$0"
         }
+      },
+      {
+        "command": "prereview.markViewedAndNext",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "prereview.active && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)"
+      },
+      {
+        "command": "prereview.nextThread",
+        "key": "ctrl+alt+j",
+        "mac": "cmd+alt+j",
+        "when": "prereview.active"
+      },
+      {
+        "command": "prereview.previousThread",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "prereview.active"
       }
     ],
     "colors": [
@@ -326,7 +411,7 @@
           "group": "navigation@3"
         },
         {
-          "command": "prereview.copyReviewPath",
+          "command": "prereview.copyPrompt",
           "when": "view == prereview.files && prereview.active",
           "group": "navigation@4"
         },
@@ -349,6 +434,36 @@
           "command": "prereview.copyReviewMarkdown",
           "when": "view == prereview.files && prereview.active",
           "group": "1_review@3"
+        },
+        {
+          "command": "prereview.sendToTerminal",
+          "when": "view == prereview.files && prereview.active",
+          "group": "navigation@5"
+        },
+        {
+          "command": "prereview.openSinceHandoff",
+          "when": "view == prereview.files && prereview.changedSinceHandoff",
+          "group": "navigation@3"
+        },
+        {
+          "command": "prereview.hideViewedFiles",
+          "when": "view == prereview.files && prereview.active && !prereview.hidingViewed",
+          "group": "navigation@6"
+        },
+        {
+          "command": "prereview.showViewedFiles",
+          "when": "view == prereview.files && prereview.active && prereview.hidingViewed",
+          "group": "navigation@6"
+        },
+        {
+          "command": "prereview.copyReviewPath",
+          "when": "view == prereview.files && prereview.active",
+          "group": "1_review@3"
+        },
+        {
+          "command": "prereview.openUnviewedChanges",
+          "when": "view == prereview.files && prereview.active && !prereview.noFiles",
+          "group": "1_review@1"
         }
       ],
       "view/item/context": [
@@ -443,6 +558,21 @@
           "command": "prereview.openSinceViewed",
           "when": "resource in prereview.updatedDocuments || activeEditor == multiDiffEditor && prereview.activeFileUpdated",
           "group": "navigation"
+        },
+        {
+          "command": "prereview.markViewedAndNext",
+          "when": "resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == unviewed",
+          "group": "1_prereview@1"
+        },
+        {
+          "command": "prereview.nextThread",
+          "when": "prereview.active && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)",
+          "group": "1_prereview@2"
+        },
+        {
+          "command": "prereview.previousThread",
+          "when": "prereview.active && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)",
+          "group": "1_prereview@3"
         }
       ],
       "comments/commentThread/context": [
@@ -463,6 +593,11 @@
         }
       ],
       "comments/commentThread/title": [
+        {
+          "command": "prereview.openSinceComment",
+          "group": "inline@0",
+          "when": "commentController == prereview"
+        },
         {
           "command": "prereview.resolve",
           "group": "inline",
@@ -499,6 +634,18 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "prereview.openSinceComment",
+          "when": "false"
+        },
+        {
+          "command": "prereview.applySuggestion",
+          "when": "false"
+        },
+        {
+          "command": "prereview.openPath",
+          "when": "false"
+        },
         {
           "command": "prereview.reviewWorktree",
           "when": "false"
@@ -610,8 +757,54 @@
         {
           "command": "prereview.copyReviewMarkdown",
           "when": "prereview.active"
+        },
+        {
+          "command": "prereview.copyPrompt",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.sendToTerminal",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.nextThread",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.previousThread",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.openUnviewedChanges",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.markViewedAndNext",
+          "when": "resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile == unviewed"
+        },
+        {
+          "command": "prereview.openSinceHandoff",
+          "when": "prereview.changedSinceHandoff"
+        },
+        {
+          "command": "prereview.hideViewedFiles",
+          "when": "prereview.active && !prereview.hidingViewed"
+        },
+        {
+          "command": "prereview.showViewedFiles",
+          "when": "prereview.active && prereview.hidingViewed"
         }
       ]
+    },
+    "configuration": {
+      "title": "Prereview",
+      "properties": {
+        "prereview.agentPrompt": {
+          "type": "string",
+          "default": "Address the code review in ${path}. The file explains how to reply.",
+          "markdownDescription": "What **Copy Prompt for Agent** and **Send to Agent Terminal** give the agent. `${path}` is replaced with the path of the review file."
+        }
+      }
     }
   },
   "scripts": {
