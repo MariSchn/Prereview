@@ -60,3 +60,48 @@ test('a review change redraws only the threads it changed, and an edit survives 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('offers comments on a changed file while its review diff is on show, and sets them again only when review diff tabs change', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'prereview-')));
+  try {
+    await git(root, ['init', '-q', '-b', 'main']);
+    await git(root, ['config', 'user.email', 't@t']);
+    await git(root, ['config', 'user.name', 't']);
+    fs.writeFileSync(path.join(root, 'a.ts'), 'one\n');
+    await git(root, ['add', '.']);
+    await git(root, ['commit', '-qm', 'base']);
+    fs.mkdirSync(path.join(root, '.prereview'));
+    fs.writeFileSync(path.join(root, '.prereview', '.gitignore'), '*\n');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'one\ntwo\n');
+    const review = await Review.open(root, 'main', null, new fake.Memento());
+    const controller = new CommentsController(fake.Uri.file('/media') as any);
+    controller.setReview(review);
+    const comments = fake.commentControllers[fake.commentControllers.length - 1];
+    const [base, head] = review.diffUris(review.files[0]);
+    const offered = () => !!comments.commentingRangeProvider.provideCommentingRanges({ uri: head, lineCount: 2 });
+    let updates = comments.rangeUpdates;
+    assert.strictEqual(offered(), false);
+
+    fake.showTabs(new fake.TabInputTextDiff(base as any, head as any));
+    fake.showEditors(base as any, head as any);
+    assert.strictEqual(comments.rangeUpdates, ++updates);
+    assert.strictEqual(offered(), true);
+    // Setting the ranges rebuilds the comment widgets, whose text boxes are editors: that must not set them again
+    fake.showEditors(base as any, head as any, fake.Uri.from({ scheme: 'comment', path: '/commentinput-1.md' }));
+    fake.showTabs(new fake.TabInputTextDiff(base as any, head as any));
+    assert.strictEqual(comments.rangeUpdates, updates);
+    // In a diff of several files, whose tab doesn't tell the files, comments go where its editors show a review diff
+    fake.showTabs({});
+    assert.strictEqual(comments.rangeUpdates, ++updates);
+    assert.strictEqual(offered(), true);
+    fake.showEditors();
+    assert.strictEqual(offered(), false);
+
+    fake.showTabs();
+    assert.strictEqual(comments.rangeUpdates, updates);
+    controller.dispose();
+    review.dispose();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

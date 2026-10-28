@@ -134,17 +134,41 @@ export class FakeCommentThread {
 
 export const commentThreads: FakeCommentThread[] = [];
 
+// Counts how often the commenting ranges are set, which makes VS Code rebuild every comment widget
+export class FakeCommentController {
+  rangeUpdates = 0;
+  private provider: any;
+  get commentingRangeProvider(): any {
+    return this.provider;
+  }
+  set commentingRangeProvider(provider: any) {
+    this.provider = provider;
+    this.rangeUpdates++;
+  }
+  createCommentThread(uri: Uri, range: Range | undefined, comments: unknown[]): FakeCommentThread {
+    const thread = new FakeCommentThread(uri, range, comments);
+    commentThreads.push(thread);
+    return thread;
+  }
+  dispose(): void {}
+}
+
+export const commentControllers: FakeCommentController[] = [];
+
 export const comments = {
-  createCommentController: () => ({
-    commentingRangeProvider: undefined as unknown,
-    createCommentThread: (uri: Uri, range: Range | undefined, comments: unknown[]) => {
-      const thread = new FakeCommentThread(uri, range, comments);
-      commentThreads.push(thread);
-      return thread;
-    },
-    dispose() {},
-  }),
+  createCommentController: () => {
+    const controller = new FakeCommentController();
+    commentControllers.push(controller);
+    return controller;
+  },
 };
+
+export class TabInputTextDiff {
+  constructor(
+    readonly original: Uri,
+    readonly modified: Uri,
+  ) {}
+}
 
 export class TreeItem {
   id?: string;
@@ -165,6 +189,8 @@ export interface FakeDocument {
 const changeDocument = new EventEmitter<{ document: FakeDocument; contentChanges: unknown[] }>();
 const closeDocument = new EventEmitter<FakeDocument>();
 const changeWindowState = new EventEmitter<{ focused: boolean }>();
+const changeVisibleEditors = new EventEmitter<unknown[]>();
+const changeTabs = new EventEmitter<unknown>();
 const never = () => ({ dispose() {} });
 const watchers = new Set<{ base: string; fire: (uri: Uri) => void }>();
 
@@ -236,9 +262,10 @@ export const window = {
   onDidChangeWindowState: changeWindowState.event,
   activeColorTheme: { kind: ColorThemeKind.Dark },
   onDidChangeActiveColorTheme: never,
-  onDidChangeVisibleTextEditors: never,
+  onDidChangeVisibleTextEditors: changeVisibleEditors.event,
   onDidChangeTextEditorSelection: never,
   visibleTextEditors: [] as unknown[],
+  tabGroups: { all: [] as { activeTab?: { input: unknown } }[], onDidChangeTabs: changeTabs.event, onDidChangeTabGroups: never },
   createTextEditorDecorationType: () => ({ dispose() {} }),
   showWarningMessage: (message: string) => {
     warnings.push(message);
@@ -256,6 +283,18 @@ export function touch(fsPath: string): void {
   for (const watcher of watchers) {
     if (!path.relative(watcher.base, fsPath).startsWith('..')) watcher.fire(Uri.file(fsPath));
   }
+}
+
+// Shows a tab in each of as many groups as there are inputs
+export function showTabs(...inputs: unknown[]): void {
+  window.tabGroups.all = inputs.map((input) => ({ activeTab: { input } }));
+  changeTabs.fire({});
+}
+
+// Shows editors on these documents. VS Code reports the text box of each comment widget as an editor too.
+export function showEditors(...uris: Uri[]): void {
+  window.visibleTextEditors = uris.map((uri) => ({ document: { uri }, selection: new Range(0, 0, 0, 0), setDecorations() {} }));
+  changeVisibleEditors.fire(window.visibleTextEditors);
 }
 
 export function setFocused(focused: boolean): void {
