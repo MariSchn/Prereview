@@ -64,6 +64,8 @@ export class CommentsController implements vscode.Disposable {
   private readonly listeners: vscode.Disposable[];
   private review?: Review;
   private icons: AuthorIcons;
+  // The files of the review diff tabs on show when the commenting ranges were last set
+  private diffsShown?: string;
 
   constructor(media: vscode.Uri) {
     this.icons = authorIcons(media);
@@ -73,17 +75,21 @@ export class CommentsController implements vscode.Disposable {
         this.forget();
         this.render();
       }),
-      vscode.window.onDidChangeVisibleTextEditors(() => {
-        this.decorateThreads();
-        this.updateCommentingRanges();
-      }),
+      vscode.window.onDidChangeVisibleTextEditors(() => this.decorateThreads()),
+      vscode.window.tabGroups.onDidChangeTabs(() => this.updateCommentingRanges()),
+      vscode.window.tabGroups.onDidChangeTabGroups(() => this.updateCommentingRanges()),
       vscode.window.onDidChangeTextEditorSelection((e) => this.decorateSelection(e.textEditor)),
     ];
     this.updateCommentingRanges();
   }
 
-  // Setting the provider again makes VS Code ask for the ranges anew.
+  // Setting the provider again makes VS Code ask for the ranges anew, and rebuild every comment widget. Each widget's
+  // text box counts as a visible editor, so this follows the review diff tabs on show, which the widgets don't change.
+  // An editor that opens later is asked once VS Code has reported it.
   private updateCommentingRanges(): void {
+    const shown = this.diffTabs();
+    if (shown === this.diffsShown) return;
+    this.diffsShown = shown;
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (doc) =>
         this.inReviewDiff(doc.uri)
@@ -101,12 +107,22 @@ export class CommentsController implements vscode.Disposable {
     );
   }
 
+  // The files of the review diffs in the tabs on show
+  private diffTabs(): string {
+    const files = vscode.window.tabGroups.all.map((group) => {
+      const input = group.activeTab?.input;
+      return input instanceof vscode.TabInputTextDiff && input.original.scheme === SCHEME ? (this.review?.fileOf(input.original)?.path ?? '') : '';
+    });
+    return files.filter(Boolean).sort().join('\n');
+  }
+
   setReview(review: Review | undefined): void {
     for (const thread of this.threads.values()) thread.dispose();
     this.threads.clear();
     this.forget();
     this.editing.clear();
     this.review = review;
+    this.diffsShown = undefined;
     this.updateCommentingRanges();
     this.render();
     if (!review) this.decorateThreads();
