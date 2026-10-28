@@ -12,6 +12,7 @@ import { ReviewEntry, ReviewsView, Suggestion, countsLabel, entryLabel, listRevi
 
 const ACTIVE_KEY = 'prereview.activeReview';
 const TERMINAL_KEY = 'prereview.agentTerminal';
+const REVIEW_AGENT_TERMINAL_KEY = 'prereview.reviewAgentTerminal';
 const HIDE_VIEWED_KEY = 'prereview.hideViewed';
 
 
@@ -240,23 +241,26 @@ export class Controller implements vscode.Disposable {
   }
 
   // The active review, or the given one, as Markdown, with the lines its threads are on now
-  // Pastes the prompt into the terminal the agent runs in, without pressing Enter, so it can be checked first
-  private async sendToTerminal(): Promise<void> {
+  // Pastes the prompt into the terminal the agent runs in, without pressing Enter, so it can be checked first. A review
+  // agent often runs in another terminal, so its terminal is remembered separately.
+  private async sendToTerminal(reviewAgent = false): Promise<void> {
     const review = this.review;
     if (!review) return;
+    const agent = reviewAgent ? 'review agent' : 'agent';
+    const key = reviewAgent ? REVIEW_AGENT_TERMINAL_KEY : TERMINAL_KEY;
     const terminals = [...vscode.window.terminals];
-    if (!terminals.length) throw new Error('Open a terminal with your agent in it first.');
-    const last = this.context.workspaceState.get<string>(TERMINAL_KEY);
+    if (!terminals.length) throw new Error(`Open a terminal with your ${agent} in it first.`);
+    const last = this.context.workspaceState.get<string>(key);
     terminals.sort((a, b) => Number(b.name === last) - Number(a.name === last));
     const terminal =
       terminals.length === 1
         ? terminals[0]
-        : (await vscode.window.showQuickPick(terminals.map((t) => ({ label: t.name, terminal: t })), { placeHolder: 'The terminal your agent runs in' }))?.terminal;
+        : (await vscode.window.showQuickPick(terminals.map((t) => ({ label: t.name, terminal: t })), { placeHolder: `The terminal your ${agent} runs in` }))?.terminal;
     if (!terminal) return;
-    void this.context.workspaceState.update(TERMINAL_KEY, terminal.name);
-    await review.handOff();
+    void this.context.workspaceState.update(key, terminal.name);
+    await (reviewAgent ? review.handOffToReviewAgent() : review.handOff());
     terminal.show();
-    terminal.sendText(review.prompt(), false);
+    terminal.sendText(reviewAgent ? review.reviewAgentPrompt() : review.prompt(), false);
   }
 
   private async markViewedAndNext(arg?: FileItem | ChangedFile | vscode.Uri): Promise<void> {
@@ -447,6 +451,14 @@ export class Controller implements vscode.Disposable {
         vscode.window.showInformationMessage('Prompt copied. Paste it into your agent.');
       }),
       command('prereview.sendToTerminal', () => this.sendToTerminal()),
+      command('prereview.copyReviewAgentPrompt', async () => {
+        const review = this.review;
+        if (!review) return;
+        await review.handOffToReviewAgent();
+        await vscode.env.clipboard.writeText(review.reviewAgentPrompt());
+        vscode.window.showInformationMessage('Prompt copied. Paste it into your review agent.');
+      }),
+      command('prereview.sendToReviewAgentTerminal', () => this.sendToTerminal(true)),
       command('prereview.markViewedAndNext', (arg?: FileItem | ChangedFile | vscode.Uri) => this.markViewedAndNext(arg)),
       command('prereview.nextThread', () => this.goToThread(1)),
       command('prereview.previousThread', () => this.goToThread(-1)),

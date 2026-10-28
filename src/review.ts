@@ -8,6 +8,7 @@ import {
   Comment,
   FileError,
   REVIEWER,
+  REVIEW_AGENT_PROMPT,
   ReviewData,
   agentPrompt,
   ReviewDocument,
@@ -394,6 +395,11 @@ export class Review implements vscode.Disposable {
     return agentPrompt(vscode.workspace.getConfiguration('prereview').get<string>('agentPrompt') || AGENT_PROMPT, this.filePath);
   }
 
+  // What to send an agent so it reviews the changes before the reviewer does, from the prereview.reviewAgentPrompt setting
+  reviewAgentPrompt(): string {
+    return agentPrompt(vscode.workspace.getConfiguration('prereview').get<string>('reviewAgentPrompt') || REVIEW_AGENT_PROMPT, this.filePath);
+  }
+
   markRead(ids: string[]): void {
     const now = new Date().toISOString();
     const unread = ids.filter((id) => {
@@ -449,6 +455,13 @@ export class Review implements vscode.Disposable {
     this.handoff = { at: new Date().toISOString(), ids: Object.fromEntries(files.map((f, i) => [f.path, ids[i] ?? ''])) };
     await this.state.update(handoffKey(this.filePath), this.handoff);
     this.announce(false);
+  }
+
+  // Writes the review file again before a review agent reads it: with this version's instructions, which a file from an
+  // older one lacks, and the lines every thread is on now. A review agent doesn't change the code, so nothing is noted
+  // to compare with later.
+  async handOffToReviewAgent(): Promise<void> {
+    if (!this.fileError) await this.update(() => undefined);
   }
 
   get handedOff(): string | undefined {

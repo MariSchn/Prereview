@@ -118,6 +118,9 @@ test('threadStatus follows who spoke last', () => {
   assert.strictEqual(threadStatus(thread([REVIEWER, 'agent'])), 'awaitingYou');
   assert.strictEqual(threadStatus(thread(['agent'])), 'awaitingYou');
   assert.strictEqual(threadStatus(thread(['agent'], true)), 'resolved');
+  // A review agent's comment waits for you, and goes to the agent once you reply to it
+  assert.strictEqual(threadStatus(thread(['review agent'])), 'awaitingYou');
+  assert.strictEqual(threadStatus(thread(['review agent', REVIEWER])), 'awaitingAgent');
 });
 
 test('serializeReview round-trips with instructions first and threads in a fixed key order', () => {

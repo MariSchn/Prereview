@@ -157,6 +157,16 @@
         "icon": "$(terminal)"
       },
       {
+        "command": "prereview.copyReviewAgentPrompt",
+        "title": "Copy Prompt for Review Agent",
+        "category": "Prereview"
+      },
+      {
+        "command": "prereview.sendToReviewAgentTerminal",
+        "title": "Send to Review Agent Terminal",
+        "category": "Prereview"
+      },
+      {
         "command": "prereview.markViewedAndNext",
         "title": "Mark as Viewed and Open Next File",
         "category": "Prereview",
@@ -464,6 +474,16 @@
           "command": "prereview.openUnviewedChanges",
           "when": "view == prereview.files && prereview.active && !prereview.noFiles",
           "group": "1_review@1"
+        },
+        {
+          "command": "prereview.copyReviewAgentPrompt",
+          "when": "view == prereview.files && prereview.active",
+          "group": "2_reviewAgent@1"
+        },
+        {
+          "command": "prereview.sendToReviewAgentTerminal",
+          "when": "view == prereview.files && prereview.active",
+          "group": "2_reviewAgent@2"
         }
       ],
       "view/item/context": [
@@ -767,6 +787,14 @@
           "when": "prereview.active"
         },
         {
+          "command": "prereview.copyReviewAgentPrompt",
+          "when": "prereview.active"
+        },
+        {
+          "command": "prereview.sendToReviewAgentTerminal",
+          "when": "prereview.active"
+        },
+        {
           "command": "prereview.nextThread",
           "when": "prereview.active"
         },
@@ -803,6 +831,11 @@
           "type": "string",
           "default": "Address the code review in ${path}. The file explains how to reply.",
           "markdownDescription": "What **Copy Prompt for Agent** and **Send to Agent Terminal** give the agent. `${path}` is replaced with the path of the review file."
+        },
+        "prereview.reviewAgentPrompt": {
+          "type": "string",
+          "default": "Review the changes for the code review in ${path}, and leave your comments in that file. It explains how.",
+          "markdownDescription": "What **Copy Prompt for Review Agent** and **Send to Review Agent Terminal** give an agent that reviews the changes before you do. `${path}` is replaced with the path of the review file."
         }
       }
     }

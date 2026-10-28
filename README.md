@@ -44,6 +44,7 @@ Prereview needs VS Code 1.99 or later and a local git repository. It is not publ
    - **Working tree** is the branch you have open, plus uncommitted changes.
    - **Another branch** shows that branch's commits. If the branch is checked out in another worktree, for example an agent's, the review includes that worktree's uncommitted changes, and you can edit the code right in the diff.
 2. The overview works like a pull request's Conversation tab. It shows the title and description, every thread, and a box for a general comment.
+   - To have an agent review the changes before you do, click **Copy prompt for review agent** in the overview and paste it into that agent, or use **Send to Review Agent Terminal**. Both are also in the **⋯** menu of **Changed Files**. The review agent's comments show up as threads waiting on you. Reply to the ones you want addressed and resolve the rest; the agent that made the change only takes up the ones you replied to. Change the prompt with the `prereview.reviewAgentPrompt` setting.
 3. **Changed Files** lists the diff as a tree, with additions and deletions. Lock files and generated files are grouped at the end. Click a file to open it. Tick a file, or a whole folder, once you have reviewed it, or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>V</kbd> (<kbd>Cmd</kbd>+<kbd>Alt</kbd>+<kbd>V</kbd> on a Mac) in its diff to tick it and open the next file. If it changes after that, it is unticked, and **Open Changes Since Viewed** (in the file's row, the diff's title bar and the overview) shows only the new part. **Open All Changes Since Viewed** shows them for every such file at once. **Hide Viewed Files** and **Open Changes Not Yet Viewed** narrow it down to what's left.
 4. Hover the line numbers in a diff and click **+** to comment. Drag to cover a range. You can also comment on a whole file, on a deleted line, or on the change as a whole. Resolve a thread when you are done with it.
    - Start a comment with `nit:`, `question:` or `blocking:` to tell the agent how much it matters.
@@ -90,7 +91,7 @@ Each review is a JSON file in `.prereview/` at the repository root. A review of 
 
 `target` is `null` for a working tree review. A thread with no line numbers is about the whole file, a thread with no `file` is a general comment, and `"side": "base"` puts the thread on the old version of the file. `file` is relative to the repository root and uses forward slashes.
 
-The `agentInstructions` field, written into every file, tells the agent to fill in the title and description, reply to open threads, and leave the rest alone. Prereview gives every comment an `id`, so the agent can leave it out.
+The `agentInstructions` field, written into every file, tells the agent to fill in the title and description, reply to open threads, and leave the rest alone. An agent asked to review the changes instead opens a thread for each problem it finds, with `"author": "review agent"`. Prereview gives every comment an `id`, so the agent can leave it out.
 
 Threads follow their code when lines are added or removed around it, also while you edit a file before saving it, and Prereview writes the current lines back to `startLine` and `endLine`. If the commented lines themselves change, or a line like `}` can't be told apart from its copies, the thread is marked **Outdated**.
 
