@@ -31,6 +31,8 @@ export class Controller implements vscode.Disposable {
   private counts = countStatuses([]);
   // Counts the reviews asked to open, so a slow one that finishes late doesn't replace a later choice
   private opening = 0;
+  // The thread Next or Previous Open Thread last went to, and where that left the cursor
+  private lastThread?: { id: string; cursor: string };
   readonly restored: Promise<void>;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -283,12 +285,19 @@ export class Controller implements vscode.Disposable {
     const file = editor && review.fileOf(editor.document.uri);
     const here = [file ? order.indexOf(file.path) : -1, editor ? editor.selection.active.line + 1 : 0];
     const from = (at: number[]) => at[0] - here[0] || at[1] - here[1];
+    // A thread on deleted lines or on a whole file leaves the cursor where it was, so the next step starts from it
+    const cursor = (e?: vscode.TextEditor) => e && `${e.document.uri}#${e.selection.active.line}`;
+    const last = this.lastThread && this.lastThread.cursor === cursor(editor) ? threads.findIndex((x) => x.t.id === this.lastThread!.id) : -1;
     const next =
-      step > 0
-        ? (threads.find((x) => from(x.at) > 0) ?? threads[0])
-        : ([...threads].reverse().find((x) => from(x.at) < 0) ?? threads[threads.length - 1]);
+      last >= 0
+        ? threads[(last + step + threads.length) % threads.length]
+        : step > 0
+          ? (threads.find((x) => from(x.at) > 0) ?? threads[0])
+          : ([...threads].reverse().find((x) => from(x.at) < 0) ?? threads[threads.length - 1]);
     await openThread(review, next.t, false);
     review.markRead([next.t.id]);
+    const after = cursor(vscode.window.activeTextEditor);
+    this.lastThread = after ? { id: next.t.id, cursor: after } : undefined;
   }
 
   // Opens a file mentioned in a comment, in its diff if it changed, at the line given
@@ -412,7 +421,7 @@ export class Controller implements vscode.Disposable {
         if (!review) return;
         if (!review.files.length) return overview.show();
         const dir = review.targetDir ?? review.root;
-        const resources = files.orderedFiles.map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review.diffUris(f)]);
+        const resources = orderFiles(review.files).map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review.diffUris(f)]);
         return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);
       }),
       command('prereview.markViewed', (arg?: FileItem | ChangedFile | vscode.Uri) => {

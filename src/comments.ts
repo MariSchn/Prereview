@@ -277,6 +277,8 @@ export class CommentsController implements vscode.Disposable {
     if (!thread) return;
     this.editing.add(editKey(comment.threadId, comment.commentId));
     this.shown.delete(comment.threadId);
+    // VS Code fills the edit box from the body shown, which has links added to it
+    comment.body = new vscode.MarkdownString(comment.source.body);
     comment.mode = vscode.CommentMode.Editing;
     thread.comments = [...thread.comments];
   }

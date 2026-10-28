@@ -13,7 +13,7 @@ import {
   describeFileError,
   suggestions,
   threadStatus,
-  withoutSuggestions,
+  withoutSuggestion,
 } from './model';
 import { Position, Review } from './review';
 
@@ -122,6 +122,9 @@ export class Overview implements vscode.Disposable {
     webview.onDidReceiveMessage((message) =>
       this.handle(message).catch((e) => vscode.window.showErrorMessage(`Prereview: ${(e as Error).message}`)),
     );
+    panel.onDidChangeViewState(() => {
+      if (panel.visible) void webview.postMessage({ type: 'shown' });
+    });
     this.panel.onDidDispose(() => {
       this.panel = undefined;
       this.posted = undefined;
@@ -174,7 +177,8 @@ export class Overview implements vscode.Disposable {
         await vscode.commands.executeCommand('prereview.openPath', message.path, typeof message.line === 'number' ? message.line : undefined);
         return;
       case 'seen':
-        if (Array.isArray(message.ids)) review.markRead(message.ids.filter((id: unknown): id is string => typeof id === 'string'));
+        // A panel hidden behind another tab still reports its cards on screen
+        if (Array.isArray(message.ids) && this.panel?.visible) review.markRead(message.ids.filter((id: unknown): id is string => typeof id === 'string'));
         return;
       case 'sinceComment':
         return vscode.commands.executeCommand('prereview.openSinceComment', message.id, { beside: true });
@@ -259,7 +263,7 @@ export class Overview implements vscode.Disposable {
               time: review.commentTime(t, c),
               isNew: review.isNew(t, c),
               kind: commentKind(c.body),
-              html: await this.markdown(suggested === undefined ? c.body : withoutSuggestions(c.body)),
+              html: await this.markdown(suggested === undefined ? c.body : withoutSuggestion(c.body)),
               body: c.author === REVIEWER ? c.body : undefined,
               suggestion: suggested === undefined ? undefined : { removed: replaced(review, t, pos), added: suggested.split('\n') },
             };

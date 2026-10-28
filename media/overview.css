@@ -1310,7 +1310,10 @@ body.vscode-high-contrast .suggestion .line.removed {
 /* Mentions of changed files in comments */
 
 .mention {
+  display: inline;
   color: var(--vscode-textLink-foreground);
+  text-align: inherit;
+  white-space: normal;
 }
 
 .markdown .mention code {

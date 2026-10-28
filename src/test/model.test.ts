@@ -9,7 +9,7 @@ import {
   agentPrompt,
   commentKind,
   suggestions,
-  withoutSuggestions,
+  withoutSuggestion,
   fileError,
   follow,
   locate,
@@ -314,10 +314,12 @@ test('commentKind reads a nit:, question: or blocking: prefix', () => {
   assert.deepStrictEqual(['nit: rename', 'Question: why?', ' blocking: leaks', 'nitpick', 'a nit: no'].map(commentKind), ['nit', 'question', 'blocking', undefined, undefined]);
 });
 
-test('suggestions reads the replacement code of suggestion blocks, also an empty one', () => {
+test('suggestions reads the replacement code of suggestion blocks, also an empty one and one with Windows line breaks', () => {
   const body = 'Simpler:\n```suggestion\nconst x = 1;\nconst y = 2;\n```\nand drop this:\n````suggestion\n````\n```ts\nnot one\n```';
   assert.deepStrictEqual(suggestions(body), ['const x = 1;\nconst y = 2;', '']);
-  assert.strictEqual(withoutSuggestions(body), 'Simpler:\n\nand drop this:\n\n```ts\nnot one\n```');
+  assert.deepStrictEqual(suggestions('```suggestion\r\nx\r\n```'), ['x']);
+  // Only the first block is shown as a suggested change, so the others stay in the text
+  assert.strictEqual(withoutSuggestion(body), 'Simpler:\n\nand drop this:\n````suggestion\n````\n```ts\nnot one\n```');
 });
 
 test('agentPrompt puts the review path in the prompt', () => {

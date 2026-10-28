@@ -82,11 +82,12 @@ const SUGGESTION = /^(`{3,})suggestion[^\S\n]*\n([\s\S]*?)\n?^\1[^\S\n]*$/gm;
 
 // The replacement code in a comment's ```suggestion blocks
 export function suggestions(body: string): string[] {
-  return [...body.matchAll(SUGGESTION)].map((m) => m[2]);
+  return [...body.replace(/\r\n/g, '\n').matchAll(SUGGESTION)].map((m) => m[2]);
 }
 
-export function withoutSuggestions(body: string): string {
-  return body.replace(SUGGESTION, '').trim();
+// The comment without its first suggestion block, which is shown as a suggested change
+export function withoutSuggestion(body: string): string {
+  return body.replace(/\r\n/g, '\n').replace(new RegExp(SUGGESTION.source, 'm'), '').trim();
 }
 
 // What to send an agent so it picks up a review; `${path}` in the template is replaced with the review file's path

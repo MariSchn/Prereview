@@ -374,9 +374,10 @@ export class Review implements vscode.Disposable {
     return comment.createdAt ?? (this.seen?.[commentKey(thread.id, comment.id)] || undefined);
   }
 
-  // Whether an agent comment arrived since the reviewer last looked at its thread
+  // Whether an agent comment arrived since the reviewer last looked at its thread, by when Prereview first saw it, as
+  // an agent's times can be in another time zone or off
   isNew(thread: Thread, comment: Comment): boolean {
-    return comment.author !== REVIEWER && (this.commentTime(thread, comment) ?? '') > (this.looked[thread.id] ?? '');
+    return comment.author !== REVIEWER && (this.seen?.[commentKey(thread.id, comment.id)] ?? '') > (this.looked[thread.id] ?? '');
   }
 
   unread(thread: Thread): number {
@@ -416,6 +417,13 @@ export class Review implements vscode.Disposable {
     }
     const uri = vscode.Uri.file(path.join(this.targetDir, thread.file));
     const doc = await vscode.workspace.openTextDocument(uri);
+    // The file may have changed since the thread's position was worked out
+    const source = this.source(thread);
+    for (let line = pos.start - 1; line < pos.end; line++) {
+      if (!source || line >= doc.lineCount || doc.lineAt(line).text !== source[line]) {
+        throw new Error(`${thread.file} changed since the review was last updated. Try again in a moment.`);
+      }
+    }
     const edit = new vscode.WorkspaceEdit();
     // An empty suggestion removes the lines, line breaks included
     const end = code || pos.end >= doc.lineCount ? doc.lineAt(pos.end - 1).range.end : new vscode.Position(pos.end, 0);
@@ -435,9 +443,10 @@ export class Review implements vscode.Disposable {
   // Notes every file as it is now, when the review goes to the agent, to show later what the agent changed
   async handOff(): Promise<void> {
     await this.syncLines();
-    const ids = await this.blobsOf(this.files, true);
-    this.files.forEach((f, i) => ids[i] && this.blobs.set(f.path, ids[i]!));
-    this.handoff = { at: new Date().toISOString(), ids: Object.fromEntries(this.files.map((f, i) => [f.path, ids[i] ?? ''])) };
+    const files = this.files;
+    const ids = await this.blobsOf(files, true);
+    files.forEach((f, i) => ids[i] && this.blobs.set(f.path, ids[i]!));
+    this.handoff = { at: new Date().toISOString(), ids: Object.fromEntries(files.map((f, i) => [f.path, ids[i] ?? ''])) };
     await this.state.update(handoffKey(this.filePath), this.handoff);
     this.announce(false);
   }
@@ -446,17 +455,22 @@ export class Review implements vscode.Disposable {
     return this.handoff?.at;
   }
 
-  // Files the agent changed since the review was last handed to it
+  // Files the agent changed since the review was last handed to it, also ones it changed back to their base
+  // version, which have left the diff
   changedSinceHandoff(): ChangedFile[] {
     const handoff = this.handoff;
-    return handoff ? this.files.filter((f) => this.blobs.get(f.path) !== handoff.ids[f.path]) : [];
+    if (!handoff) return [];
+    const paths = new Set(this.files.map((f) => f.path));
+    const gone = Object.keys(handoff.ids).filter((p) => !paths.has(p));
+    return [...this.files.filter((f) => this.blobs.get(f.path) !== handoff.ids[f.path]), ...gone.map((p): ChangedFile => ({ path: p, oldPath: p, status: 'M' }))];
   }
 
   sinceHandoffUris(file: ChangedFile): [vscode.Uri, vscode.Uri] | undefined {
     if (!this.handoff) return undefined;
     const id = this.handoff.ids[file.path];
     const left = id && /^[0-9a-f]{40,64}$/.test(id) ? this.gitUri(file.path, { blob: id }) : this.gitUri(file.path);
-    return [left, this.diffUris(file)[1]];
+    // A file that left the diff is as it is in the base
+    return [left, this.files.includes(file) ? this.diffUris(file)[1] : this.baseUri(file.path)];
   }
 
   private async noteCommented(threadId: string, file?: string, side?: 'base'): Promise<void> {
@@ -714,7 +728,7 @@ export class Review implements vscode.Disposable {
     for (const t of this.data.threads) {
       for (const c of t.comments) {
         const key = commentKey(t.id, c.id);
-        if (c.author === REVIEWER || c.createdAt || key in seen) continue;
+        if (c.author === REVIEWER || key in seen) continue;
         seen[key] = first ? '' : now;
         changed = true;
       }

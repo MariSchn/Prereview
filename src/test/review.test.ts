@@ -550,6 +550,13 @@ test('agent replies are new until their thread is looked at, and replies already
     assert.ok(review.commentTime(first, first.comments[1]));
     review.markRead([first.id]);
     assert.strictEqual(review.unread(first), 0);
+    // A reply is new by when Prereview first saw it, whatever time the agent wrote on it
+    await sleep(5);
+    const later = onDisk(review);
+    later.threads[0].comments.push({ author: 'agent', body: 'more', createdAt: '2000-01-01T00:00:00-05:00' });
+    fs.writeFileSync(review.filePath, JSON.stringify(later));
+    await review.refresh();
+    assert.strictEqual(review.unread(review.data.threads[0]), 1);
     review.dispose();
     // A review opened for the first time doesn't count replies that were already there as new
     const fresh = await Review.load(review.filePath, new fake.Memento(), r.root);
@@ -568,8 +575,13 @@ test('a suggestion is applied to the lines its thread is on, and the thread is r
     await review.addThread({ file: 'a.ts', startLine: 2, endLine: 3 }, 'Simpler:\n```suggestion\nbc\n```');
     const [t] = review.data.threads;
     assert.ok(review.canApply(t));
+    // A line added above, not yet noticed: the suggestion waits for the thread to move with its lines
+    r.write('a.ts', lines('x', 'a', 'b', 'c', 'd'));
+    await assert.rejects(review.applySuggestion(t.id, t.comments[0].id), /changed since/);
+    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('x', 'a', 'b', 'c', 'd'));
+    await review.refresh();
     await review.applySuggestion(t.id, t.comments[0].id);
-    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('a', 'bc', 'd'));
+    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('x', 'a', 'bc', 'd'));
     assert.deepStrictEqual([review.data.threads[0].resolved, review.data.threads[0].comments[1].body], [true, 'Applied the suggestion.']);
     fake.workspace.textDocuments.length = 0;
     review.dispose();
@@ -596,6 +608,14 @@ test('what changed since a comment and since the hand-off is kept, and lock file
     const [handedOff] = review.sinceHandoffUris(review.files.find((f) => f.path === 'b.ts')!)!;
     assert.strictEqual(await contentProvider.provideTextDocumentContent(handedOff as any), '');
     assert.deepStrictEqual(review.files.filter((f) => f.generated).map((f) => f.path), ['package-lock.json']);
+    // Changed back to its base version, a file leaves the diff but still changed since the hand-off
+    r.write('a.ts', lines('one'));
+    await review.refresh();
+    const changed = review.changedSinceHandoff();
+    assert.deepStrictEqual(changed.map((f) => f.path), ['b.ts', 'a.ts']);
+    const [was, now] = review.sinceHandoffUris(changed[1])!;
+    const text = (uri: unknown) => contentProvider.provideTextDocumentContent(uri as any);
+    assert.deepStrictEqual([await text(was), await text(now)], [lines('one', 'two'), lines('one')]);
     review.dispose();
   } finally {
     r.cleanup();

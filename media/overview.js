@@ -20,7 +20,7 @@
   let seen = new Set();
   let parts = new Map();
   let primed = false;
-  let jumps = 0;
+  let lastJump = null;
   let editing = null;
   let focusTarget = null;
   let filesFocus = null;
@@ -29,7 +29,8 @@
   let scrolled = false;
   let state = null;
   let composing = false;
-  // A thread with new replies counts as read once it has been on screen for a moment
+  // A thread with new replies counts as read once most of it, or most of the panel for a long one, has been on screen
+  // for a moment
   const looking = new Map();
   const visibility = new IntersectionObserver(
     (entries) => {
@@ -37,7 +38,7 @@
         const id = entry.target.dataset.id;
         clearTimeout(looking.get(id));
         looking.delete(id);
-        if (!entry.isIntersecting) continue;
+        if (!entry.isIntersecting || entry.intersectionRect.height < 0.6 * Math.min(entry.boundingClientRect.height, window.innerHeight)) continue;
         const timer = setTimeout(() => {
           looking.delete(id);
           if (document.visibilityState === 'visible') post({ type: 'seen', ids: [id] });
@@ -45,7 +46,7 @@
         looking.set(id, timer);
       }
     },
-    { threshold: 0.6 },
+    { threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] },
   );
   const live = document.createElement('div');
   live.className = 'visually-hidden';
@@ -62,6 +63,8 @@
     if (state) render();
   });
   window.addEventListener('message', (event) => {
+    // Back in view: what was on screen while the panel was hidden hasn't been looked at yet
+    if (event.data?.type === 'shown') return observeUnread();
     if (event.data?.type !== 'state') return;
     if (event.data.state.reviewId !== reviewId) reset(event.data.state.reviewId);
     state = event.data.state;
@@ -79,7 +82,7 @@
     seen = new Set();
     parts = new Map();
     primed = false;
-    jumps = 0;
+    lastJump = null;
     editing = null;
     focusTarget = null;
     filesFocus = null;
@@ -102,6 +105,11 @@
   // thread it was in moved away, unless they moved the focus elsewhere first
   function focusNext(key, reveal = true, done = () => true) {
     focusTarget = { key, reveal, done, from: document.activeElement };
+  }
+
+  function observeUnread() {
+    visibility.disconnect();
+    for (const card of app.querySelectorAll('.thread.unread')) visibility.observe(card);
   }
 
   function threadOf(id) {
@@ -444,8 +452,7 @@
       }
     }
     updateFileStops();
-    visibility.disconnect();
-    for (const card of app.querySelectorAll('.thread.unread')) visibility.observe(card);
+    observeUnread();
     const from = focusTarget?.from;
     const moved = focusTarget && active !== from && !(active?.dataset?.key && active.dataset.key === from?.dataset?.key);
     const wanted = focusTarget && !moved && focusTarget.done() ? focusTarget : null;
@@ -566,7 +573,7 @@
   }
 
   function statusAction(tone, waiting) {
-    if (waiting) return button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length]), null, 'go-to-thread');
+    if (waiting) return button('Go to thread', 'secondary', () => jumpTo(nextWaiting(waiting)), null, 'go-to-thread');
     if (tone === 'awaitingAgent') return h('span', { class: 'handoff' }, copyButton('secondary', 'copy:status'), terminalButton());
     if (tone === 'resolved' && state.threads.length) return button('Finish review', 'secondary', command('finishReview'), 'finish');
     if (!state.files.length) return button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh');
@@ -672,6 +679,12 @@
           }),
       ),
     );
+  }
+
+  // A thread with new replies not just visited, otherwise the one after the last visited
+  function nextWaiting(waiting) {
+    lastJump = waiting.find((id) => id !== lastJump && threadOf(id)?.unread > 0) ?? waiting[(waiting.indexOf(lastJump) + 1) % waiting.length];
+    return lastJump;
   }
 
   function jumpTo(id) {
