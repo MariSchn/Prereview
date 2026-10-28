@@ -260,6 +260,10 @@ test('lines in a file with unsaved edits are not written to the review file', as
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Waits up to five seconds for something the review does in the background, as git can be slow on CI machines
+async function until(condition: () => boolean): Promise<void> {
+  for (const end = Date.now() + 5000; !condition() && Date.now() < end; ) await sleep(50);
+}
 
 // Counts full refreshes, optionally making each one slower
 function refreshes(review: Review, delay = 0): () => number {
@@ -310,12 +314,14 @@ test('ignored files never refresh, and code changed in the background waits for 
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
     fs.writeFileSync(review.filePath, JSON.stringify(data));
     fake.touch(review.filePath);
-    await sleep(600);
+    await until(() => review.data.threads[0].comments.length === 2);
     assert.deepStrictEqual([runs(), review.data.threads[0].comments.length], [0, 2]);
     fake.setFocused(true);
     await sleep(300);
     assert.strictEqual(runs(), 1);
     assert.strictEqual(review.files.find((f) => f.path === 'a.ts')?.added, 1);
+    // Windows can't remove the folder while that refresh still runs git in it
+    await review.refresh();
     review.dispose();
   } finally {
     fake.setFocused(true);
@@ -385,12 +391,13 @@ test('a file git ignored is refreshed once it is added anyway, and a reply is re
     assert.strictEqual(runs(), 0);
     await git(r.root, ['add', '-f', 'api.gen.ts']);
     fake.touch(path.join(r.root, '.git', 'index'));
-    await sleep(600);
+    await until(() => review.files.some((f) => f.path === 'api.gen.ts'));
     r.write('api.gen.ts', lines('x', 'y', 'z'));
     fake.touch(path.join(r.root, 'api.gen.ts'));
-    await sleep(600);
+    await until(() => review.files.find((f) => f.path === 'api.gen.ts')?.added === 3);
     assert.strictEqual(review.files.find((f) => f.path === 'api.gen.ts')?.added, 3);
     // However long the last refresh took, a change to the review file alone is read within a moment
+    await review.refresh();
     (review as any).cost = 3000;
     const data = onDisk(review);
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
@@ -529,6 +536,95 @@ test('worktrees without a review are suggested, except the one with the default 
     view.dispose();
     await git(root, ['worktree', 'remove', '--force', worktree]).catch(() => undefined);
     fs.rmSync(worktree, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('agent replies are new until their thread is looked at, and replies already there are not', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('two'));
+    const state = new fake.Memento();
+    const review = await Review.open(r.root, 'main', null, state);
+    await review.addThread({}, 'first');
+    await review.addThread({}, 'second');
+    const data = onDisk(review);
+    data.threads[0].comments.push({ author: 'agent', body: 'answer' });
+    fs.writeFileSync(review.filePath, JSON.stringify(data));
+    await review.refresh();
+    const [first, second] = review.data.threads;
+    assert.deepStrictEqual([review.unread(first), review.unread(second)], [1, 0]);
+    assert.ok(review.commentTime(first, first.comments[1]));
+    review.markRead([first.id]);
+    assert.strictEqual(review.unread(first), 0);
+    // A reply is new by when Prereview first saw it, whatever time the agent wrote on it
+    await sleep(5);
+    const later = onDisk(review);
+    later.threads[0].comments.push({ author: 'agent', body: 'more', createdAt: '2000-01-01T00:00:00-05:00' });
+    fs.writeFileSync(review.filePath, JSON.stringify(later));
+    await review.refresh();
+    assert.strictEqual(review.unread(review.data.threads[0]), 1);
+    review.dispose();
+    // A review opened for the first time doesn't count replies that were already there as new
+    const fresh = await Review.load(review.filePath, new fake.Memento(), r.root);
+    assert.deepStrictEqual([fresh.unread(fresh.data.threads[0]), fresh.commentTime(fresh.data.threads[0], fresh.data.threads[0].comments[1])], [0, undefined]);
+    fresh.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('a suggestion is applied to the lines its thread is on, and the thread is resolved', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('a', 'b', 'c', 'd'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 2, endLine: 3 }, 'Simpler:\n```suggestion\nbc\n```');
+    const [t] = review.data.threads;
+    assert.ok(review.canApply(t));
+    // A line added above, not yet noticed: the suggestion waits for the thread to move with its lines
+    r.write('a.ts', lines('x', 'a', 'b', 'c', 'd'));
+    await assert.rejects(review.applySuggestion(t.id, t.comments[0].id), /changed since/);
+    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('x', 'a', 'b', 'c', 'd'));
+    await review.refresh();
+    await review.applySuggestion(t.id, t.comments[0].id);
+    assert.strictEqual(fs.readFileSync(path.join(r.root, 'a.ts'), 'utf8'), lines('x', 'a', 'bc', 'd'));
+    assert.deepStrictEqual([review.data.threads[0].resolved, review.data.threads[0].comments[1].body], [true, 'Applied the suggestion.']);
+    fake.workspace.textDocuments.length = 0;
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('what changed since a comment and since the hand-off is kept, and lock files are marked', async () => {
+  const r = await repo({ 'a.ts': lines('one'), 'b.ts': lines('x') });
+  try {
+    r.write('a.ts', lines('one', 'two'));
+    r.write('package-lock.json', '{}\n');
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 2, endLine: 2 }, 'why two?');
+    await review.handOff();
+    assert.deepStrictEqual([review.sinceCommentUris(review.data.threads[0]), review.changedSinceHandoff()], [undefined, []]);
+    r.write('a.ts', lines('one', 'two', 'three'));
+    r.write('b.ts', lines('y'));
+    await review.refresh();
+    const [before] = review.sinceCommentUris(review.data.threads[0])!;
+    assert.strictEqual(await contentProvider.provideTextDocumentContent(before as any), lines('one', 'two'));
+    assert.deepStrictEqual(review.changedSinceHandoff().map((f) => f.path), ['a.ts', 'b.ts']);
+    const [handedOff] = review.sinceHandoffUris(review.files.find((f) => f.path === 'b.ts')!)!;
+    assert.strictEqual(await contentProvider.provideTextDocumentContent(handedOff as any), '');
+    assert.deepStrictEqual(review.files.filter((f) => f.generated).map((f) => f.path), ['package-lock.json']);
+    // Changed back to its base version, a file leaves the diff but still changed since the hand-off
+    r.write('a.ts', lines('one'));
+    await review.refresh();
+    const changed = review.changedSinceHandoff();
+    assert.deepStrictEqual(changed.map((f) => f.path), ['b.ts', 'a.ts']);
+    const [was, now] = review.sinceHandoffUris(changed[1])!;
+    const text = (uri: unknown) => contentProvider.provideTextDocumentContent(uri as any);
+    assert.deepStrictEqual([await text(was), await text(now)], [lines('one', 'two'), lines('one')]);
+    review.dispose();
+  } finally {
     r.cleanup();
   }
 });

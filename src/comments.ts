@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
-import { Comment, REVIEWER, STATUS_LABELS, authorName, threadStatus } from './model';
+import { Comment, KIND_LABELS, REVIEWER, STATUS_LABELS, Thread, authorName, commentKind, suggestions, threadStatus } from './model';
+
+// A fenced code block, left alone, or a file mention in inline code such as `src/a.ts:12`
+const MENTION = /(^(`{3,})[^\n]*\n[\s\S]*?^\2[^\S\n]*$)|`([^`\s:]+)(?::(\d+)(?:-\d+)?)?`/gm;
 import { Review, SCHEME } from './review';
 
 export interface AuthorIcons {
@@ -28,10 +31,13 @@ export class ReviewComment implements vscode.Comment {
     readonly source: Comment,
     readonly threadId: string,
     icons: AuthorIcons,
+    // The text shown, with links added to the comment's own
+    readonly text = source.body,
   ) {
     const mine = source.author === REVIEWER;
     this.commentId = source.id;
-    this.body = new vscode.MarkdownString(source.body);
+    this.body = new vscode.MarkdownString(text);
+    this.body.isTrusted = { enabledCommands: ['prereview.openPath', 'prereview.applySuggestion'] };
     this.author = { name: authorName(source.author), iconPath: mine ? icons.reviewer : icons.agent };
     this.contextValue = mine ? 'reviewer' : 'agent';
     const time = Date.parse(source.createdAt ?? '');
@@ -131,18 +137,21 @@ export class CommentsController implements vscode.Disposable {
         this.threads.set(t.id, thread);
       }
       const editing = t.comments.filter((c) => this.editing.has(editKey(t.id, c.id))).map((c) => c.id);
-      const shown = JSON.stringify([pos, t.resolved, status, t.comments, editing]);
+      const texts = t.comments.map((c) => this.text(t, c));
+      const unread = review.unread(t);
+      const shown = JSON.stringify([pos, t.resolved, status, t.comments, texts, unread, editing]);
       if (this.shown.get(t.id) === shown) continue;
       this.shown.set(t.id, shown);
       if (range) thread.range = range;
-      thread.comments = t.comments.map((c) => this.comment(t.id, c));
+      thread.comments = t.comments.map((c, i) => this.comment(t.id, c, texts[i]));
       const state = t.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
       if (thread.state !== state) {
         thread.collapsibleState = t.resolved ? vscode.CommentThreadCollapsibleState.Collapsed : vscode.CommentThreadCollapsibleState.Expanded;
       }
       thread.state = state;
       thread.contextValue = t.resolved ? 'resolved' : 'unresolved';
-      thread.label = [STATUS_LABELS[status], pos?.outdated ? 'Outdated' : ''].filter(Boolean).join(' · ');
+      const kind = commentKind(t.comments[0]?.body ?? '');
+      thread.label = [STATUS_LABELS[status], kind && KIND_LABELS[kind], unread ? 'New reply' : '', pos?.outdated ? 'Outdated' : ''].filter(Boolean).join(' · ');
     }
     for (const [id, thread] of this.threads) {
       if (!seen.has(id)) {
@@ -156,15 +165,34 @@ export class CommentsController implements vscode.Disposable {
   }
 
   // The comment object last given to VS Code, while it still shows the same comment or is being edited
-  private comment(threadId: string, c: Comment): ReviewComment {
+  private comment(threadId: string, c: Comment, text: string): ReviewComment {
     const known = this.comments.get(threadId) ?? new Map<string, ReviewComment>();
     this.comments.set(threadId, known);
     const last = known.get(c.id);
-    const same = last && last.source.body === c.body && last.source.author === c.author && last.source.createdAt === c.createdAt;
+    const same = last && last.text === text && last.source.author === c.author && last.source.createdAt === c.createdAt;
     if (last && (same || this.editing.has(editKey(threadId, c.id)))) return last;
-    const comment = new ReviewComment(c, threadId, this.icons);
+    const comment = new ReviewComment(c, threadId, this.icons, text);
     known.set(c.id, comment);
     return comment;
+  }
+
+  // A comment with `path:line` mentions of changed files linked to their diffs, and an Apply link under a
+  // suggestion that can be applied
+  private text(t: Thread, c: Comment): string {
+    const review = this.review!;
+    const files = new Set(review.files.map((f) => f.path));
+    let text = c.body.replace(MENTION, (match, block, _fence, file, line) => {
+      if (block || !files.has(file)) return match;
+      return `[${match}](command:prereview.openPath?${encodeURIComponent(JSON.stringify([file, line ? Number(line) : undefined]))})`;
+    });
+    if (c.author === REVIEWER && suggestions(c.body).length && review.canApply(t)) {
+      text += `\n\n[Apply suggestion](command:prereview.applySuggestion?${encodeURIComponent(JSON.stringify([t.id, c.id]))})`;
+    }
+    return text;
+  }
+
+  threadIdOf(thread: vscode.CommentThread): string | undefined {
+    return this.idOf(thread);
   }
 
   private forget(): void {
@@ -249,6 +277,8 @@ export class CommentsController implements vscode.Disposable {
     if (!thread) return;
     this.editing.add(editKey(comment.threadId, comment.commentId));
     this.shown.delete(comment.threadId);
+    // VS Code fills the edit box from the body shown, which has links added to it
+    comment.body = new vscode.MarkdownString(comment.source.body);
     comment.mode = vscode.CommentMode.Editing;
     thread.comments = [...thread.comments];
   }

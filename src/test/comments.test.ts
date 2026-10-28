@@ -22,7 +22,7 @@ test('a review change redraws only the threads it changed, and an edit survives 
     fs.writeFileSync(path.join(root, '.prereview', '.gitignore'), '*\n');
     fs.writeFileSync(path.join(root, 'a.ts'), 'one\ntwo\nthree\n');
     const review = await Review.open(root, 'main', null, new fake.Memento());
-    await review.addThread({ file: 'a.ts', startLine: 1, endLine: 1 }, 'first');
+    await review.addThread({ file: 'a.ts', startLine: 1, endLine: 1 }, 'first, like `a.ts:2`');
     await review.addThread({ file: 'a.ts', startLine: 2, endLine: 2 }, 'second');
     const controller = new CommentsController(fake.Uri.file('/media') as any);
     controller.setReview(review);
@@ -34,7 +34,11 @@ test('a review change redraws only the threads it changed, and an edit survives 
     assert.deepStrictEqual([one.commentUpdates, two.commentUpdates], [before[0] + 1, before[1]]);
 
     const editing: ReviewComment = one.comments[0];
+    const body = () => (editing.body as { value: string }).value;
+    assert.match(body(), /command:prereview\.openPath/);
     controller.editComment(editing);
+    // The edit box gets the comment as written, without the link added to the mention
+    assert.strictEqual(body(), 'first, like `a.ts:2`');
     const data = JSON.parse(fs.readFileSync(review.filePath, 'utf8'));
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
     fs.writeFileSync(review.filePath, JSON.stringify(data));
@@ -42,7 +46,7 @@ test('a review change redraws only the threads it changed, and an edit survives 
     controller.render();
     assert.strictEqual(one.comments[0], editing);
     assert.strictEqual(editing.mode, fake.CommentMode.Editing);
-    assert.deepStrictEqual(one.comments.map((c: ReviewComment) => c.source.body), ['first', 'more', 'answer']);
+    assert.deepStrictEqual(one.comments.map((c: ReviewComment) => c.source.body), ['first, like `a.ts:2`', 'more', 'answer']);
     controller.cancelEdit(editing);
     assert.strictEqual(one.comments[0].mode, fake.CommentMode.Preview);
     // Saving an edit without changing anything still leaves edit mode

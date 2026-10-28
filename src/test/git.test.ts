@@ -8,6 +8,7 @@ import {
   catBlob,
   changedFiles,
   commitOf,
+  generatedPaths,
   git,
   hashObjects,
   ignoredPaths,
@@ -203,6 +204,16 @@ test('branches lists the most recently committed first, and commitOf resolves an
     assert.deepStrictEqual((await branches(r.root))[0], 'new');
     assert.strictEqual(await commitOf(r.root, 'HEAD~1'), r.base);
     await assert.rejects(commitOf(r.root, 'nope'), /"nope" isn't a branch, tag or commit/);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('generatedPaths finds lock files and files marked linguist-generated', async () => {
+  const r = await tempRepo({ '.gitattributes': 'gen/** linguist-generated\nkeep.ts -linguist-generated\n', 'a.ts': 'a\n' });
+  try {
+    const paths = ['package-lock.json', 'sub/Cargo.lock', 'gen/api.ts', 'keep.ts', 'a.ts', 'lock.ts'];
+    assert.deepStrictEqual([...(await generatedPaths(r.root, paths))].sort(), ['gen/api.ts', 'package-lock.json', 'sub/Cargo.lock']);
   } finally {
     r.cleanup();
   }

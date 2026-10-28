@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentsController, ReviewComment } from './comments';
-import { TreeNode, flatten } from './fileTree';
+import { TreeNode, flatten, orderFiles } from './fileTree';
 import { FileItem, FilesView } from './filesView';
 import { ChangedFile, branches, commitOf, defaultBase, git, repoRoot, worktrees } from './git';
 import { FileError, Thread, ThreadStatus, countStatuses, describeFileError, pairLabel, reviewMarkdown, tildify } from './model';
@@ -11,6 +11,9 @@ import { Review, ReviewChange, SCHEME, contentProvider, createReview, deleteRevi
 import { ReviewEntry, ReviewsView, Suggestion, countsLabel, entryLabel, listReviews } from './reviewsView';
 
 const ACTIVE_KEY = 'prereview.activeReview';
+const TERMINAL_KEY = 'prereview.agentTerminal';
+const HIDE_VIEWED_KEY = 'prereview.hideViewed';
+
 
 // The active review and everything that shows it: the trees, comment threads, overview and status bar
 export class Controller implements vscode.Disposable {
@@ -28,6 +31,8 @@ export class Controller implements vscode.Disposable {
   private counts = countStatuses([]);
   // Counts the reviews asked to open, so a slow one that finishes late doesn't replace a later choice
   private opening = 0;
+  // The thread Next or Previous Open Thread last went to, and where that left the cursor
+  private lastThread?: { id: string; cursor: string };
   readonly restored: Promise<void>;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -64,6 +69,11 @@ export class Controller implements vscode.Disposable {
         this.reveal(editor?.document.uri);
         this.updateActiveFile();
       }),
+      // Threads in a file that is on screen count as looked at
+      vscode.window.onDidChangeVisibleTextEditors((editors) => {
+        const files = new Set(editors.map((e) => this.review?.fileOf(e.document.uri)?.path));
+        this.review?.markRead(this.review.data.threads.filter((t) => t.file && files.has(t.file)).map((t) => t.id));
+      }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.repository()),
       this.tree.onDidChangeCheckboxState(async (event) => {
         try {
@@ -78,6 +88,8 @@ export class Controller implements vscode.Disposable {
       }),
       ...this.registerCommands(),
     ];
+    this.files.hideViewed = context.workspaceState.get<boolean>(HIDE_VIEWED_KEY) ?? false;
+    void vscode.commands.executeCommand('setContext', 'prereview.hidingViewed', this.files.hideViewed);
     this.restored = this.restore();
   }
 
@@ -188,6 +200,7 @@ export class Controller implements vscode.Disposable {
     setContext('prereview.hasUpdated', !!review?.files.some((f) => review.viewState(f) === 'updated'));
     setContext('prereview.noChanges', clean);
     setContext('prereview.emptyDiff', noFiles && !clean && !review?.changesError);
+    setContext('prereview.changedSinceHandoff', !!review?.changedSinceHandoff().length);
   }
 
   // Each diff's title bar shows the viewed buttons for its own file, so the states are published per document
@@ -227,6 +240,84 @@ export class Controller implements vscode.Disposable {
   }
 
   // The active review, or the given one, as Markdown, with the lines its threads are on now
+  // Pastes the prompt into the terminal the agent runs in, without pressing Enter, so it can be checked first
+  private async sendToTerminal(): Promise<void> {
+    const review = this.review;
+    if (!review) return;
+    const terminals = [...vscode.window.terminals];
+    if (!terminals.length) throw new Error('Open a terminal with your agent in it first.');
+    const last = this.context.workspaceState.get<string>(TERMINAL_KEY);
+    terminals.sort((a, b) => Number(b.name === last) - Number(a.name === last));
+    const terminal =
+      terminals.length === 1
+        ? terminals[0]
+        : (await vscode.window.showQuickPick(terminals.map((t) => ({ label: t.name, terminal: t })), { placeHolder: 'The terminal your agent runs in' }))?.terminal;
+    if (!terminal) return;
+    void this.context.workspaceState.update(TERMINAL_KEY, terminal.name);
+    await review.handOff();
+    terminal.show();
+    terminal.sendText(review.prompt(), false);
+  }
+
+  private async markViewedAndNext(arg?: FileItem | ChangedFile | vscode.Uri): Promise<void> {
+    const review = this.review;
+    const file = this.fileArg(arg);
+    if (!review || !file) return;
+    await review.setViewed([file], true);
+    const order = orderFiles(review.files);
+    const after = [...order.slice(order.findIndex((f) => f.path === file.path) + 1), ...order];
+    const next = after.find((f) => f.path !== file.path && review.viewState(f) !== 'viewed');
+    if (next) await openDiff(review, next);
+    else vscode.window.showInformationMessage('All files are viewed.');
+  }
+
+  // Opens the next or previous open thread after the cursor, in the order of Changed Files
+  private async goToThread(step: 1 | -1): Promise<void> {
+    const review = this.review;
+    if (!review) return;
+    const order = orderFiles(review.files).map((f) => f.path);
+    const threads = review.data.threads
+      .filter((t) => !t.resolved && t.file && order.includes(t.file))
+      .map((t) => ({ t, at: [order.indexOf(t.file!), review.position(t)?.start ?? 0] }))
+      .sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1]);
+    if (!threads.length) return void vscode.window.showInformationMessage('There are no open threads on changed files.');
+    const editor = vscode.window.activeTextEditor;
+    const file = editor && review.fileOf(editor.document.uri);
+    const here = [file ? order.indexOf(file.path) : -1, editor ? editor.selection.active.line + 1 : 0];
+    const from = (at: number[]) => at[0] - here[0] || at[1] - here[1];
+    // A thread on deleted lines or on a whole file leaves the cursor where it was, so the next step starts from it
+    const cursor = (e?: vscode.TextEditor) => e && `${e.document.uri}#${e.selection.active.line}`;
+    const last = this.lastThread && this.lastThread.cursor === cursor(editor) ? threads.findIndex((x) => x.t.id === this.lastThread!.id) : -1;
+    const next =
+      last >= 0
+        ? threads[(last + step + threads.length) % threads.length]
+        : step > 0
+          ? (threads.find((x) => from(x.at) > 0) ?? threads[0])
+          : ([...threads].reverse().find((x) => from(x.at) < 0) ?? threads[threads.length - 1]);
+    await openThread(review, next.t, false);
+    review.markRead([next.t.id]);
+    const after = cursor(vscode.window.activeTextEditor);
+    this.lastThread = after ? { id: next.t.id, cursor: after } : undefined;
+  }
+
+  // Opens a file mentioned in a comment, in its diff if it changed, at the line given
+  private async openPath(file: string, line?: number): Promise<void> {
+    const review = this.review;
+    if (!review) return;
+    const at = line ? new vscode.Position(line - 1, 0) : undefined;
+    const selection = at && new vscode.Range(at, at);
+    const changed = review.files.find((f) => f.path === file);
+    if (changed) await openDiff(review, changed, selection, true);
+    else await vscode.window.showTextDocument(review.headUri(file), { selection, viewColumn: vscode.ViewColumn.Beside });
+  }
+
+  private setHideViewed(hide: boolean): void {
+    this.files.hideViewed = hide;
+    void this.context.workspaceState.update(HIDE_VIEWED_KEY, hide);
+    void vscode.commands.executeCommand('setContext', 'prereview.hidingViewed', hide);
+    this.files.refresh();
+  }
+
   private markdown(entry?: ReviewEntry): string | undefined {
     const review = entry && entry.filePath !== this.review?.filePath ? undefined : this.review;
     // A file that can't be read has no comments to copy, unless it is the active review, which keeps the last ones read
@@ -330,7 +421,7 @@ export class Controller implements vscode.Disposable {
         if (!review) return;
         if (!review.files.length) return overview.show();
         const dir = review.targetDir ?? review.root;
-        const resources = files.orderedFiles.map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review.diffUris(f)]);
+        const resources = orderFiles(review.files).map((f) => [vscode.Uri.file(path.join(dir, f.path)), ...review.diffUris(f)]);
         return vscode.commands.executeCommand('vscode.changes', `Review: ${review.title}`, resources);
       }),
       command('prereview.markViewed', (arg?: FileItem | ChangedFile | vscode.Uri) => {
@@ -344,10 +435,55 @@ export class Controller implements vscode.Disposable {
       command('prereview.copyReviewPath', async (entry?: ReviewEntry) => {
         const filePath = entry?.filePath ?? this.review?.filePath;
         if (!filePath) return;
-        if (filePath === this.review?.filePath) await this.review.syncLines();
+        if (filePath === this.review?.filePath) await this.review.handOff();
         await vscode.env.clipboard.writeText(filePath);
         vscode.window.showInformationMessage('Review path copied. Send it to your agent.');
       }),
+      command('prereview.copyPrompt', async () => {
+        const review = this.review;
+        if (!review) return;
+        await review.handOff();
+        await vscode.env.clipboard.writeText(review.prompt());
+        vscode.window.showInformationMessage('Prompt copied. Paste it into your agent.');
+      }),
+      command('prereview.sendToTerminal', () => this.sendToTerminal()),
+      command('prereview.markViewedAndNext', (arg?: FileItem | ChangedFile | vscode.Uri) => this.markViewedAndNext(arg)),
+      command('prereview.nextThread', () => this.goToThread(1)),
+      command('prereview.previousThread', () => this.goToThread(-1)),
+      command('prereview.applySuggestion', (threadId: string, commentId: string) => this.review?.applySuggestion(threadId, commentId)),
+      command('prereview.openPath', (file: string, line?: number) => this.openPath(file, line)),
+      command('prereview.openSinceComment', (arg: string | vscode.CommentThread, options?: { beside?: boolean }) => {
+        const review = this.review;
+        const id = typeof arg === 'string' ? arg : comments.threadIdOf(arg);
+        const thread = review?.data.threads.find((t) => t.id === id);
+        const uris = thread && review!.sinceCommentUris(thread);
+        if (!thread || !uris) return vscode.window.showInformationMessage("The code hasn't changed since your last comment in this thread.");
+        const pos = review!.position(thread);
+        const at = pos && new vscode.Range(pos.start - 1, 0, pos.start - 1, 0);
+        const viewColumn = options?.beside ? vscode.ViewColumn.Beside : undefined;
+        return vscode.commands.executeCommand('vscode.diff', ...uris, `${path.posix.basename(thread.file!)} (since your comment)`, { selection: at, viewColumn });
+      }),
+      command('prereview.openSinceHandoff', () => {
+        const review = this.review;
+        if (!review) return;
+        const resources = orderFiles(review.changedSinceHandoff()).flatMap((f) => {
+          const uris = review.sinceHandoffUris(f);
+          return uris ? [[uris[1], ...uris]] : [];
+        });
+        if (!resources.length) return vscode.window.showInformationMessage('Nothing changed since you handed the review to the agent.');
+        return vscode.commands.executeCommand('vscode.changes', `Since hand-off: ${review.title}`, resources);
+      }),
+      command('prereview.openUnviewedChanges', () => {
+        const review = this.review;
+        if (!review) return;
+        const resources = orderFiles(review.files)
+          .filter((f) => !f.generated && review.viewState(f) !== 'viewed')
+          .map((f) => [vscode.Uri.file(path.join(review.targetDir ?? review.root, f.path)), ...review.diffUris(f)]);
+        if (!resources.length) return vscode.window.showInformationMessage('All files are viewed.');
+        return vscode.commands.executeCommand('vscode.changes', `Not viewed: ${review.title}`, resources);
+      }),
+      command('prereview.hideViewedFiles', () => this.setHideViewed(true)),
+      command('prereview.showViewedFiles', () => this.setHideViewed(false)),
       command('prereview.openReviewFile', async (entry?: { filePath: string; error?: FileError }) => {
         const filePath = entry?.filePath ?? this.review?.filePath;
         if (!filePath) return;
@@ -404,18 +540,17 @@ function openDiff(review: Review, file: ChangedFile, selection?: vscode.Range, b
   return vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true, selection, viewColumn });
 }
 
-// Threads are only opened from the overview
-async function openThread(review: Review, thread: Thread): Promise<void> {
+async function openThread(review: Review, thread: Thread, beside = true): Promise<void> {
   const uri = review.threadUri(thread);
   if (!uri || !thread.file) return;
   const pos = review.position(thread);
   const range = pos && new vscode.Range(pos.start - 1, 0, pos.end - 1, 0);
   const file = review.files.find((f) => f.path === thread.file);
   if (!file) {
-    await vscode.window.showTextDocument(uri, { selection: range, viewColumn: vscode.ViewColumn.Beside });
+    await vscode.window.showTextDocument(uri, { selection: range, viewColumn: beside ? vscode.ViewColumn.Beside : undefined });
     return;
   }
-  await openDiff(review, file, thread.side === 'base' ? undefined : range, true);
+  await openDiff(review, file, thread.side === 'base' ? undefined : range, beside);
   if (thread.side === 'base' && range) {
     const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString());
     editor?.revealRange(range, vscode.TextEditorRevealType.InCenter);

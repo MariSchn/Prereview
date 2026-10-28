@@ -7,6 +7,7 @@
     ['resolved', 'Resolved'],
   ];
   const FILE_STATUS = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed' };
+  const KINDS = { nit: 'Nit', question: 'Question', blocking: 'Blocking' };
   const VIEWED = {
     unviewed: ['circle', 'Mark as viewed'],
     viewed: ['resolved', 'Mark as not viewed'],
@@ -19,7 +20,7 @@
   let seen = new Set();
   let parts = new Map();
   let primed = false;
-  let jumps = 0;
+  let lastJump = null;
   let editing = null;
   let focusTarget = null;
   let filesFocus = null;
@@ -28,6 +29,25 @@
   let scrolled = false;
   let state = null;
   let composing = false;
+  // A thread with new replies counts as read once most of it, or most of the panel for a long one, has been on screen
+  // for a moment
+  const looking = new Map();
+  const visibility = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const id = entry.target.dataset.id;
+        clearTimeout(looking.get(id));
+        looking.delete(id);
+        if (!entry.isIntersecting || entry.intersectionRect.height < 0.6 * Math.min(entry.boundingClientRect.height, window.innerHeight)) continue;
+        const timer = setTimeout(() => {
+          looking.delete(id);
+          if (document.visibilityState === 'visible') post({ type: 'seen', ids: [id] });
+        }, 1500);
+        looking.set(id, timer);
+      }
+    },
+    { threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] },
+  );
   const live = document.createElement('div');
   live.className = 'visually-hidden';
   live.setAttribute('role', 'status');
@@ -43,6 +63,8 @@
     if (state) render();
   });
   window.addEventListener('message', (event) => {
+    // Back in view: what was on screen while the panel was hidden hasn't been looked at yet
+    if (event.data?.type === 'shown') return observeUnread();
     if (event.data?.type !== 'state') return;
     if (event.data.state.reviewId !== reviewId) reset(event.data.state.reviewId);
     state = event.data.state;
@@ -60,7 +82,7 @@
     seen = new Set();
     parts = new Map();
     primed = false;
-    jumps = 0;
+    lastJump = null;
     editing = null;
     focusTarget = null;
     filesFocus = null;
@@ -83,6 +105,11 @@
   // thread it was in moved away, unless they moved the focus elsewhere first
   function focusNext(key, reveal = true, done = () => true) {
     focusTarget = { key, reveal, done, from: document.activeElement };
+  }
+
+  function observeUnread() {
+    visibility.disconnect();
+    for (const card of app.querySelectorAll('.thread.unread')) visibility.observe(card);
   }
 
   function threadOf(id) {
@@ -141,6 +168,7 @@
     edit: '<path d="M10.75 2.5 13.5 5.25 6 12.75H3.25V10z"/>',
     trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/>',
     outdated: '<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/>',
+    terminal: '<path d="M1.75 2.75h12.5v10.5H1.75z"/><path d="m4.5 6 2 2-2 2M8.25 10.25h3.25"/>',
     chevron: '<path d="m6 3.75 4.25 4.25L6 12.25"/>',
     bold: '<path d="M4.75 2.75h3.75a2.6 2.6 0 0 1 0 5.25H4.75zM4.75 8h4.5a2.6 2.6 0 0 1 0 5.25h-4.5z"/>',
     italic: '<path d="M6.75 2.75h5M4.25 13.25h5M9.5 2.75 6.5 13.25"/>',
@@ -424,6 +452,7 @@
       }
     }
     updateFileStops();
+    observeUnread();
     const from = focusTarget?.from;
     const moved = focusTarget && active !== from && !(active?.dataset?.key && active.dataset.key === from?.dataset?.key);
     const wanted = focusTarget && !moved && focusTarget.done() ? focusTarget : null;
@@ -459,7 +488,7 @@
             'div',
             { class: 'actions' },
             s.files.length ? button('Open all changes', 'secondary', command('openAllChanges'), 'diff') : null,
-            copyButton('primary', 'copy:header'),
+            h('span', { class: 'handoff' }, copyButton('primary', 'copy:header'), terminalButton()),
             button('Finish review', 'ghost danger', command('finishReview'), 'finish'),
           ),
         ),
@@ -497,36 +526,45 @@
     );
   }
 
+  // Copies what to tell the agent: the review file's path, with an instruction to address it
   function copyButton(kind, key) {
     let reset;
     const el = button(
-      'Copy path for agent',
+      'Copy prompt for agent',
       kind,
       () => {
-        post({ type: 'copyPath' });
-        announce('Review path copied.');
+        post({ type: 'copyPrompt' });
+        announce('Prompt copied.');
         el.style.minWidth = `${el.offsetWidth}px`;
         el.replaceChildren(icon('check'), 'Copied');
         clearTimeout(reset);
         reset = setTimeout(() => {
           el.style.minWidth = '';
-          el.replaceChildren(icon('copy'), 'Copy path for agent');
+          el.replaceChildren(icon('copy'), 'Copy prompt for agent');
         }, 1600);
       },
       'copy',
       key,
     );
+    el.title = 'Copies the review file path with an instruction to address it';
     return el;
+  }
+
+  function terminalButton() {
+    return iconButton('terminal', 'Send to agent terminal', () => post({ type: 'sendToTerminal' }), 'terminal-button');
   }
 
   function status() {
     const { counts, threads } = state;
     if (counts.awaitingYou) {
-      const waiting = threads.filter((t) => t.status === 'awaitingYou').map((t) => t.id);
+      const waiting = threads
+        .filter((t) => t.status === 'awaitingYou')
+        .sort((a, b) => Number(b.unread > 0) - Number(a.unread > 0))
+        .map((t) => t.id);
       const text = `${plural(counts.awaitingYou, 'thread')} ${counts.awaitingYou === 1 ? 'needs' : 'need'} your reply.`;
       return ['awaitingYou', 'Your turn', text, waiting];
     }
-    if (counts.awaitingAgent) return ['awaitingAgent', "Agent's turn", 'Copy the review path and send it to your agent.'];
+    if (counts.awaitingAgent) return ['awaitingAgent', "Agent's turn", 'Copy the prompt, or send it to the terminal your agent runs in.'];
     if (counts.resolved) return ['resolved', 'All threads resolved', 'Finish the review once you are happy with the changes.'];
     if (!state.files.length && !state.threads.length) {
       return state.changesError ? ['idle', "Couldn't load the changes", state.changesError] : ['resolved', 'In sync', 'The two sides match.'];
@@ -535,8 +573,8 @@
   }
 
   function statusAction(tone, waiting) {
-    if (waiting) return button('Go to thread', 'secondary', () => jumpTo(waiting[jumps++ % waiting.length]), null, 'go-to-thread');
-    if (tone === 'awaitingAgent') return copyButton('secondary', 'copy:status');
+    if (waiting) return button('Go to thread', 'secondary', () => jumpTo(nextWaiting(waiting)), null, 'go-to-thread');
+    if (tone === 'awaitingAgent') return h('span', { class: 'handoff' }, copyButton('secondary', 'copy:status'), terminalButton());
     if (tone === 'resolved' && state.threads.length) return button('Finish review', 'secondary', command('finishReview'), 'finish');
     if (!state.files.length) return button('Refresh', 'secondary', command('refresh'), 'refresh', 'refresh');
     return button('Open all changes', 'secondary', command('openAllChanges'), 'diff');
@@ -569,7 +607,8 @@
     const [tone, title, text, waiting] = status();
     const viewed = files.filter((f) => f.viewed === 'viewed').length;
     const updated = files.filter((f) => f.viewed === 'updated').length;
-    const data = [tone, title, text, waiting, counts, threads.length, files.length, viewed, updated];
+    const sinceHandoff = state.handoff?.changed ?? 0;
+    const data = [tone, title, text, waiting, counts, threads.length, files.length, viewed, updated, sinceHandoff];
     return part('status', data, () =>
       h(
         'section',
@@ -610,6 +649,15 @@
               h('span', { class: 'since-viewed-action' }, 'Show changes'),
             )
           : null,
+        sinceHandoff
+          ? h(
+              'button',
+              { class: 'plain since-viewed', type: 'button', 'data-key': 'since-handoff', onclick: () => post({ type: 'command', name: 'openSinceHandoff' }) },
+              icon('history'),
+              h('span', {}, `${plural(sinceHandoff, 'file')} changed since you handed off`),
+              h('span', { class: 'since-viewed-action' }, 'Show changes'),
+            )
+          : null,
       ),
     );
   }
@@ -631,6 +679,12 @@
           }),
       ),
     );
+  }
+
+  // A thread with new replies not just visited, otherwise the one after the last visited
+  function nextWaiting(waiting) {
+    lastJump = waiting.find((id) => id !== lastJump && threadOf(id)?.unread > 0) ?? waiting[(waiting.indexOf(lastJump) + 1) % waiting.length];
+    return lastJump;
   }
 
   function jumpTo(id) {
@@ -785,7 +839,7 @@
 
   function description() {
     if (!state.description && !state.files.length && !state.threads.length) return null;
-    return part('description', state.description ?? '', () =>
+    return part('description', [state.description ?? '', state.files.length], () =>
       h(
         'section',
         { class: state.description ? 'card description' : 'card description pending', 'aria-label': 'Description' },
@@ -796,7 +850,7 @@
           h('span', { class: 'author' }, 'Agent'),
           h('span', { class: 'muted' }, state.description ? 'wrote a description' : 'adds a title and description when it picks up the review'),
         ),
-        state.description ? h('div', { class: 'card-body markdown', html: state.description }) : null,
+        state.description ? linkify(h('div', { class: 'card-body markdown', html: state.description })) : null,
       ),
     );
   }
@@ -882,7 +936,7 @@
 
   function thread(t) {
     const editingId = editing && editing.id === t.id ? editing.commentId : null;
-    return part(`thread:${t.id}`, [t, editingId], () => buildThread(t));
+    return part(`thread:${t.id}`, [t, editingId, state.files.length], () => buildThread(t));
   }
 
   function buildThread(t) {
@@ -890,7 +944,7 @@
     const where = t.file ? `${t.file}${t.where ? `, ${t.where}` : ''}` : 'General comment';
     return h(
       'article',
-      { class: `card thread ${t.status}`, 'data-id': t.id, 'data-flip': `${t.id}:${t.status}`, 'aria-label': `${where}, ${t.status === 'awaitingYou' ? 'awaiting you' : t.status === 'awaitingAgent' ? 'awaiting agent' : 'resolved'}` },
+      { class: `card thread ${t.status}${t.unread ? ' unread' : ''}`, 'data-id': t.id, 'data-flip': `${t.id}:${t.status}`, 'aria-label': `${where}, ${t.status === 'awaitingYou' ? 'awaiting you' : t.status === 'awaitingAgent' ? 'awaiting agent' : 'resolved'}` },
       h(
         'div',
         { class: 'card-head' },
@@ -906,6 +960,11 @@
         h(
           'span',
           { class: 'head-actions' },
+          t.unread ? h('span', { class: 'pill new' }, `${t.unread} new`) : null,
+          t.kind ? h('span', { class: `pill comment-kind ${t.kind}` }, KINDS[t.kind]) : null,
+          t.sinceComment
+            ? iconButton('history', 'Show what changed since your comment', () => post({ type: 'sinceComment', id: t.id }), '', `since-comment:${t.id}`)
+            : null,
           t.outdated
             ? h('span', { class: 'pill outdated', title: 'The code this comment was left on has changed' }, icon('outdated'), 'Outdated')
             : null,
@@ -953,6 +1012,50 @@
     );
   }
 
+  // A suggested change as a diff of the lines it replaces, with a button to apply it to the file
+  function suggestion(t, c) {
+    const { removed, added } = c.suggestion;
+    const line = (sign, text) => h('div', { class: `line ${sign === '+' ? 'added' : 'removed'}` }, h('span', { class: 'ln' }, sign), h('span', { class: 'code' }, text || ' '));
+    const apply = t.canApply && t.status !== 'resolved';
+    return h(
+      'div',
+      { class: 'suggestion' },
+      h(
+        'div',
+        { class: 'suggestion-head' },
+        h('span', {}, 'Suggested change'),
+        h('span', { class: 'spacer' }),
+        apply
+          ? button(
+              'Apply suggestion',
+              'secondary',
+              () => {
+                focusAfter(t, () => threadOf(t.id)?.status === 'resolved');
+                post({ type: 'applySuggestion', id: t.id, commentId: c.id });
+              },
+              undefined,
+              `apply:${t.id}:${c.id}`,
+            )
+          : null,
+      ),
+      h('div', { class: 'snippet' }, removed.map((text) => line('-', text)), added.map((text) => line('+', text))),
+    );
+  }
+
+  // Turns mentions of changed files in inline code, like `src/a.ts:12`, into links to their diffs
+  function linkify(el) {
+    const files = new Set(state.files.map((f) => f.path));
+    for (const code of el.querySelectorAll(':not(pre) > code')) {
+      const match = /^([^\s:]+)(?::(\d+)(?:-\d+)?)?$/.exec(code.textContent);
+      if (!match || !files.has(match[1])) continue;
+      const line = match[2] ? Number(match[2]) : undefined;
+      const link = h('button', { class: 'plain mention', type: 'button', title: 'Open in diff', onclick: () => post({ type: 'openPath', path: match[1], line }) });
+      code.replaceWith(link);
+      link.append(code);
+    }
+    return el;
+  }
+
   function comment(t, c) {
     const isEditing = editing && editing.id === t.id && editing.commentId === c.id;
     const key = `${t.id}:${c.id}`;
@@ -970,6 +1073,7 @@
           { class: 'comment-head' },
           h('span', { class: 'author' }, c.author),
           c.time ? h('time', { class: 'time', datetime: c.time, title: new Date(c.time).toLocaleString() }, ago(c.time)) : null,
+          c.isNew ? h('span', { class: 'pill new' }, 'New') : null,
           h('span', { class: 'spacer' }),
           isEditing
             ? null
@@ -1004,7 +1108,8 @@
                 ),
               ),
         ),
-        isEditing ? editBox(t, c) : h('div', { class: 'markdown', html: c.html }),
+        isEditing ? editBox(t, c) : linkify(h('div', { class: 'markdown', html: c.html })),
+        !isEditing && c.suggestion ? suggestion(t, c) : null,
       ),
     );
   }

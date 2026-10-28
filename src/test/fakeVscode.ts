@@ -1,4 +1,5 @@
 // A stand-in for the parts of the `vscode` module that `Review` and `listReviews` use, so they run under node.
+import * as fs from 'fs';
 import * as path from 'path';
 
 type Listener<T> = (e: T) => unknown;
@@ -167,8 +168,56 @@ const changeWindowState = new EventEmitter<{ focused: boolean }>();
 const never = () => ({ dispose() {} });
 const watchers = new Set<{ base: string; fire: (uri: Uri) => void }>();
 
+// A document over a file on disk, enough to apply edits to it and save it
+class TextDocument {
+  isDirty = false;
+  constructor(
+    readonly uri: Uri,
+    private text: string,
+  ) {}
+  get lineCount(): number {
+    return this.text.split('\n').length;
+  }
+  lineAt(line: number) {
+    const text = this.text.split('\n')[line];
+    return { text, range: new Range(line, 0, line, text.length) };
+  }
+  getText(): string {
+    return this.text;
+  }
+  replace(range: Range, text: string): void {
+    const offset = (p: Position) => this.text.split('\n').slice(0, p.line).reduce((n, l) => n + l.length + 1, 0) + p.character;
+    this.text = this.text.slice(0, offset(range.start)) + text + this.text.slice(offset(range.end));
+    this.isDirty = true;
+  }
+  async save(): Promise<boolean> {
+    fs.writeFileSync(this.uri.fsPath, this.text);
+    this.isDirty = false;
+    return true;
+  }
+}
+
+export class WorkspaceEdit {
+  readonly edits: { uri: Uri; range: Range; text: string }[] = [];
+  replace(uri: Uri, range: Range, text: string): void {
+    this.edits.push({ uri, range, text });
+  }
+}
+
 export const workspace = {
   textDocuments: [] as FakeDocument[],
+  getConfiguration: () => ({ get: () => undefined }),
+  openTextDocument: async (uri: Uri) => {
+    const open = workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+    if (open) return open;
+    const doc = new TextDocument(uri, fs.readFileSync(uri.fsPath, 'utf8'));
+    workspace.textDocuments.push(doc);
+    return doc;
+  },
+  applyEdit: async (edit: WorkspaceEdit) => {
+    for (const { uri, range, text } of edit.edits) ((await workspace.openTextDocument(uri)) as TextDocument).replace(range, text);
+    return true;
+  },
   createFileSystemWatcher: (pattern: RelativePattern) => {
     const listeners: ((uri: Uri) => void)[] = [];
     const listen = (listener: (uri: Uri) => void) => listeners.push(listener);

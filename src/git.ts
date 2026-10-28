@@ -11,6 +11,21 @@ export interface ChangedFile {
   added?: number;
   deleted?: number;
   blob?: string;
+  // A lock file or a file .gitattributes marks as linguist-generated
+  generated?: boolean;
+}
+
+const LOCK_FILES = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum|flake\.lock|pubspec\.lock|mix\.lock|Podfile\.lock|packages\.lock\.json)$/;
+
+// Which of these paths are lock files or generated, so they can be kept out of the way
+export async function generatedPaths(cwd: string, paths: string[]): Promise<Set<string>> {
+  const generated = new Set(paths.filter((p) => LOCK_FILES.test(p)));
+  const rest = paths.filter((p) => !generated.has(p));
+  if (!rest.length) return generated;
+  // With -z, each answer is the path, the attribute and its value
+  const parts = (await git(cwd, ['check-attr', '-z', '--stdin', 'linguist-generated'], rest.join('\0') + '\0').catch(() => '')).split('\0');
+  for (let i = 0; i + 2 < parts.length; i += 3) if (parts[i + 2] === 'set' || parts[i + 2] === 'true') generated.add(parts[i]);
+  return generated;
 }
 
 export interface GitError extends Error {

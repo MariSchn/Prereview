@@ -15,6 +15,8 @@ const STATUS: Record<Status, [label: string, color: string]> = {
 
 export type FileItem = FileNode<ChangedFile>;
 
+const GENERATED = 'Generated and lock files';
+
 export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>, vscode.FileDecorationProvider {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
@@ -22,9 +24,17 @@ export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>
   private parents = new Map<TreeNode<ChangedFile>, TreeNode<ChangedFile>>();
   private nodes = new Map<string, FileItem>();
   review?: Review;
+  hideViewed = false;
 
   refresh(): void {
-    this.roots = this.review ? buildTree(this.review.files) : [];
+    const review = this.review;
+    const files = review ? review.files.filter((f) => !this.hideViewed || review.viewState(f) !== 'viewed') : [];
+    const generated = files.filter((f) => f.generated);
+    this.roots = buildTree(files.filter((f) => !f.generated));
+    // Lock files and generated files go in one group at the end, closed, so they don't get in the way
+    if (generated.length) {
+      this.roots.push({ kind: 'folder', name: GENERATED, path: GENERATED, children: generated.map((file) => ({ kind: 'file', file })) });
+    }
     this.parents.clear();
     this.nodes.clear();
     const index = (nodes: TreeNode<ChangedFile>[], parent?: TreeNode<ChangedFile>) => {
@@ -57,10 +67,17 @@ export class FilesView implements vscode.TreeDataProvider<TreeNode<ChangedFile>>
 
   getTreeItem(node: TreeNode<ChangedFile>): vscode.TreeItem {
     if (node.kind === 'folder') {
-      const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Expanded);
+      const group = node.path === GENERATED;
+      const item = new vscode.TreeItem(node.name, group ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded);
       item.id = `folder:${node.path}`;
-      item.resourceUri = vscode.Uri.from({ scheme: DECORATION_SCHEME, path: '/' + node.path });
-      item.iconPath = vscode.ThemeIcon.Folder;
+      if (group) {
+        item.description = `${node.children.length}`;
+        item.tooltip = 'Lock files, and files .gitattributes marks as linguist-generated';
+        item.iconPath = new vscode.ThemeIcon('lock');
+      } else {
+        item.resourceUri = vscode.Uri.from({ scheme: DECORATION_SCHEME, path: '/' + node.path });
+        item.iconPath = vscode.ThemeIcon.Folder;
+      }
       const viewed = flatten(node.children).every((f) => this.review!.viewState(f) === 'viewed');
       item.checkboxState = {
         state: viewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked,

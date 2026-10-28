@@ -62,10 +62,40 @@ export const AGENT_INSTRUCTIONS =
   '{"id": "<unique id>", "file": "<path>", "startLine": <n>, "endLine": <n>, "resolved": false, "comments": [{"author": "agent", "body": "..."}]} to `threads` ' +
   '(leave out the lines for a whole-file comment, or `file` for a general one). ' +
   'Prereview gives every comment an `id`; you can leave it out of the comments you add. ' +
+  'A reviewer comment that starts with `nit:` is optional, one that starts with `question:` asks for an answer rather than a change, and one that starts with `blocking:` must be addressed. ' +
+  'A ```suggestion block in a reviewer comment is the exact replacement for the thread\'s lines: apply it as written, or say in your reply why not. ' +
   'Do not resolve threads or edit or delete existing comments; the reviewer does that. ' +
   'Make your changes where `target` is checked out, or commit them to it. ' +
   'Read this file again right before you edit it, since the reviewer may have added comments in the meantime, and keep it valid JSON; ' +
   'the reviewer\'s editor picks up changes automatically.';
+
+export type CommentKind = 'nit' | 'question' | 'blocking';
+
+// How much a comment asks for, from a `nit:`, `question:` or `blocking:` at its start
+export function commentKind(body: string): CommentKind | undefined {
+  return /^\s*(nit|question|blocking)\s*:/i.exec(body)?.[1].toLowerCase() as CommentKind | undefined;
+}
+
+export const KIND_LABELS: Record<CommentKind, string> = { nit: 'Nit', question: 'Question', blocking: 'Blocking' };
+
+const SUGGESTION = /^(`{3,})suggestion[^\S\n]*\n([\s\S]*?)\n?^\1[^\S\n]*$/gm;
+
+// The replacement code in a comment's ```suggestion blocks
+export function suggestions(body: string): string[] {
+  return [...body.replace(/\r\n/g, '\n').matchAll(SUGGESTION)].map((m) => m[2]);
+}
+
+// The comment without its first suggestion block, which is shown as a suggested change
+export function withoutSuggestion(body: string): string {
+  return body.replace(/\r\n/g, '\n').replace(new RegExp(SUGGESTION.source, 'm'), '').trim();
+}
+
+// What to send an agent so it picks up a review; `${path}` in the template is replaced with the review file's path
+export const AGENT_PROMPT = 'Address the code review in ${path}. The file explains how to reply.';
+
+export function agentPrompt(template: string, filePath: string): string {
+  return template.includes('${path}') ? template.split('${path}').join(filePath) : `${template} ${filePath}`;
+}
 
 export function threadStatus(thread: Thread): ThreadStatus {
   if (thread.resolved) return 'resolved';
@@ -303,10 +333,12 @@ export class ReviewDocument {
     };
   }
 
-  addThread(location: Pick<Thread, 'file' | 'side' | 'startLine' | 'endLine' | 'snippet'>, comment: Comment): void {
+  addThread(location: Pick<Thread, 'file' | 'side' | 'startLine' | 'endLine' | 'snippet'>, comment: Comment): string {
     const { file, side, startLine, endLine, snippet } = location;
+    const id = newId();
     if (!Array.isArray(this.raw.threads)) this.raw.threads = [];
-    this.raw.threads.push({ id: newId(), file, side, startLine, endLine, snippet, resolved: false, comments: [comment] });
+    this.raw.threads.push({ id, file, side, startLine, endLine, snippet, resolved: false, comments: [comment] });
+    return id;
   }
 
   addComment(threadId: string, comment: Comment): void {
