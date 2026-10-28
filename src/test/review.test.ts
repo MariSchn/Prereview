@@ -260,6 +260,10 @@ test('lines in a file with unsaved edits are not written to the review file', as
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Waits up to five seconds for something the review does in the background, as git can be slow on CI machines
+async function until(condition: () => boolean): Promise<void> {
+  for (const end = Date.now() + 5000; !condition() && Date.now() < end; ) await sleep(50);
+}
 
 // Counts full refreshes, optionally making each one slower
 function refreshes(review: Review, delay = 0): () => number {
@@ -310,12 +314,14 @@ test('ignored files never refresh, and code changed in the background waits for 
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
     fs.writeFileSync(review.filePath, JSON.stringify(data));
     fake.touch(review.filePath);
-    await sleep(600);
+    await until(() => review.data.threads[0].comments.length === 2);
     assert.deepStrictEqual([runs(), review.data.threads[0].comments.length], [0, 2]);
     fake.setFocused(true);
     await sleep(300);
     assert.strictEqual(runs(), 1);
     assert.strictEqual(review.files.find((f) => f.path === 'a.ts')?.added, 1);
+    // Windows can't remove the folder while that refresh still runs git in it
+    await review.refresh();
     review.dispose();
   } finally {
     fake.setFocused(true);
@@ -385,12 +391,13 @@ test('a file git ignored is refreshed once it is added anyway, and a reply is re
     assert.strictEqual(runs(), 0);
     await git(r.root, ['add', '-f', 'api.gen.ts']);
     fake.touch(path.join(r.root, '.git', 'index'));
-    await sleep(600);
+    await until(() => review.files.some((f) => f.path === 'api.gen.ts'));
     r.write('api.gen.ts', lines('x', 'y', 'z'));
     fake.touch(path.join(r.root, 'api.gen.ts'));
-    await sleep(600);
+    await until(() => review.files.find((f) => f.path === 'api.gen.ts')?.added === 3);
     assert.strictEqual(review.files.find((f) => f.path === 'api.gen.ts')?.added, 3);
     // However long the last refresh took, a change to the review file alone is read within a moment
+    await review.refresh();
     (review as any).cost = 3000;
     const data = onDisk(review);
     data.threads[0].comments.push({ author: 'agent', body: 'answer' });
