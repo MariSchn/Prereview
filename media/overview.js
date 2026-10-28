@@ -534,32 +534,35 @@
     );
   }
 
-  // Copies what to tell the agent: the review file's path, with an instruction to address it
-  function copyButton(kind, key) {
+  // Copies what to tell the agent: the review file's path, with an instruction to address it, or for a review agent, to
+  // review the changes
+  function copyButton(kind, key, reviewAgent = false) {
+    const label = reviewAgent ? 'Copy prompt for review agent' : 'Copy prompt for agent';
     let reset;
     const el = button(
-      'Copy prompt for agent',
+      label,
       kind,
       () => {
-        post({ type: 'copyPrompt' });
+        post({ type: reviewAgent ? 'copyReviewAgentPrompt' : 'copyPrompt' });
         announce('Prompt copied.');
         el.style.minWidth = `${el.offsetWidth}px`;
         el.replaceChildren(icon('check'), 'Copied');
         clearTimeout(reset);
         reset = setTimeout(() => {
           el.style.minWidth = '';
-          el.replaceChildren(icon('copy'), 'Copy prompt for agent');
+          el.replaceChildren(icon('copy'), label);
         }, 1600);
       },
       'copy',
       key,
     );
-    el.title = 'Copies the review file path with an instruction to address it';
+    el.title = reviewAgent ? 'Copies the review file path with an instruction to review the changes' : 'Copies the review file path with an instruction to address it';
     return el;
   }
 
-  function terminalButton() {
-    return iconButton('terminal', 'Send to agent terminal', () => post({ type: 'sendToTerminal' }), 'terminal-button');
+  function terminalButton(reviewAgent = false) {
+    const label = reviewAgent ? 'Send to review agent terminal' : 'Send to agent terminal';
+    return iconButton('terminal', label, () => post({ type: reviewAgent ? 'sendToReviewAgentTerminal' : 'sendToTerminal' }), 'terminal-button');
   }
 
   function status() {
@@ -870,7 +873,8 @@
         { class: 'empty-state', 'data-flip': 'empty' },
         emptyArt(),
         h('strong', {}, 'No comments yet'),
-        h('span', { class: 'muted' }, 'Comment on lines in the diff, or leave a general comment below.'),
+        h('span', { class: 'muted' }, 'Comment on lines in the diff, leave a general comment below, or have an agent review the changes first.'),
+        h('div', { class: 'empty-actions' }, h('span', { class: 'handoff' }, copyButton('secondary', 'copy:review-agent', true), terminalButton(true))),
       ),
     );
   }

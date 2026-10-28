@@ -8,6 +8,7 @@ import {
   Comment,
   FileError,
   REVIEWER,
+  REVIEW_AGENT_PROMPT,
   ReviewData,
   agentPrompt,
   ReviewDocument,
@@ -392,6 +393,11 @@ export class Review implements vscode.Disposable {
   // What to send the agent so it picks up the review, from the prereview.agentPrompt setting
   prompt(): string {
     return agentPrompt(vscode.workspace.getConfiguration('prereview').get<string>('agentPrompt') || AGENT_PROMPT, this.filePath);
+  }
+
+  // What to send an agent so it reviews the changes before the reviewer does, from the prereview.reviewAgentPrompt setting
+  reviewAgentPrompt(): string {
+    return agentPrompt(vscode.workspace.getConfiguration('prereview').get<string>('reviewAgentPrompt') || REVIEW_AGENT_PROMPT, this.filePath);
   }
 
   markRead(ids: string[]): void {

@@ -170,6 +170,10 @@ export class Overview implements vscode.Disposable {
         return vscode.env.clipboard.writeText(review.prompt());
       case 'sendToTerminal':
         return vscode.commands.executeCommand('prereview.sendToTerminal');
+      case 'copyReviewAgentPrompt':
+        return vscode.env.clipboard.writeText(review.reviewAgentPrompt());
+      case 'sendToReviewAgentTerminal':
+        return vscode.commands.executeCommand('prereview.sendToReviewAgentTerminal');
       case 'applySuggestion':
         return review.applySuggestion(message.id, message.commentId);
       case 'openPath':

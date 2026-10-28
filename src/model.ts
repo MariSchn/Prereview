@@ -66,6 +66,10 @@ export const AGENT_INSTRUCTIONS =
   'A ```suggestion block in a reviewer comment is the exact replacement for the thread\'s lines: apply it as written, or say in your reply why not. ' +
   'Do not resolve threads or edit or delete existing comments; the reviewer does that. ' +
   'Make your changes where `target` is checked out, or commit them to it. ' +
+  'If you were asked to review the changes instead, review what `target` (or the working tree, if it is null) changes since it branched off `base`, uncommitted changes included. ' +
+  'For each problem no thread mentions yet, open a thread as above with `"author": "review agent"`, starting a comment with `nit:`, `question:` or `blocking:` to say how much it matters, ' +
+  'and change nothing else: not the code, `title`, `description` or other threads. ' +
+  'The reviewer replies to the review agent\'s comments they want addressed; leave a thread whose last comment is the review agent\'s alone. ' +
   'Read this file again right before you edit it, since the reviewer may have added comments in the meantime, and keep it valid JSON; ' +
   'the reviewer\'s editor picks up changes automatically.';
 
@@ -92,6 +96,9 @@ export function withoutSuggestion(body: string): string {
 
 // What to send an agent so it picks up a review; `${path}` in the template is replaced with the review file's path
 export const AGENT_PROMPT = 'Address the code review in ${path}. The file explains how to reply.';
+
+// What to send an agent so it reviews the changes before the reviewer does
+export const REVIEW_AGENT_PROMPT = 'Review the changes for the code review in ${path}, and leave your comments in that file. It explains how.';
 
 export function agentPrompt(template: string, filePath: string): string {
   return template.includes('${path}') ? template.split('${path}').join(filePath) : `${template} ${filePath}`;

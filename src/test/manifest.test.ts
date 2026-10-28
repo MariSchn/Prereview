@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { test } from 'node:test';
+import { AGENT_PROMPT, REVIEW_AGENT_PROMPT } from '../model';
 
 const root = path.join(__dirname, '..', '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -30,4 +31,9 @@ test('every Prereview context key a when clause reads is set by the extension', 
   const set = new Set([...source.matchAll(/setContext'?[,(]\s*'(prereview\.\w+)'/g)].map((m) => m[1]));
   assert.ok(set.size > 5, 'found where context keys are set');
   assert.deepStrictEqual([...keys].filter((k) => !set.has(k)), []);
+});
+
+test('the prompt settings default to the prompts the extension falls back to', () => {
+  const settings = pkg.contributes.configuration.properties;
+  assert.deepStrictEqual([settings['prereview.agentPrompt'].default, settings['prereview.reviewAgentPrompt'].default], [AGENT_PROMPT, REVIEW_AGENT_PROMPT]);
 });
