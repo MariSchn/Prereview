@@ -6,7 +6,7 @@ import * as path from 'path';
 import { test } from 'node:test';
 import * as fake from './fakeVscode';
 import { git, repoRoot } from '../git';
-import { REVIEWER } from '../model';
+import { AGENT_INSTRUCTIONS, REVIEWER } from '../model';
 import { Review, contentProvider, createReview } from '../review';
 import { ReviewsView, listReviews } from '../reviewsView';
 
@@ -623,6 +623,25 @@ test('what changed since a comment and since the hand-off is kept, and lock file
     const [was, now] = review.sinceHandoffUris(changed[1])!;
     const text = (uri: unknown) => contentProvider.provideTextDocumentContent(uri as any);
     assert.deepStrictEqual([await text(was), await text(now)], [lines('one', 'two'), lines('one')]);
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
+test("a review agent gets this version's instructions and where threads are now, and no hand-off is noted", async () => {
+  const r = await repo({ 'a.ts': lines('old') });
+  try {
+    r.write('a.ts', lines('a', 'b', 'c'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    await review.addThread({ file: 'a.ts', startLine: 3, endLine: 3 }, 'why c?');
+    // A file written by an older version, and lines added above the thread since
+    fs.writeFileSync(review.filePath, JSON.stringify({ ...onDisk(review), agentInstructions: 'old' }));
+    r.write('a.ts', lines('x', 'y', 'a', 'b', 'c'));
+    await review.refresh();
+    await review.handOffToReviewAgent();
+    const after = onDisk(review);
+    assert.deepStrictEqual([after.agentInstructions, after.threads[0].startLine, review.handedOff], [AGENT_INSTRUCTIONS, 5, undefined]);
     review.dispose();
   } finally {
     r.cleanup();

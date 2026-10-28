@@ -457,6 +457,13 @@ export class Review implements vscode.Disposable {
     this.announce(false);
   }
 
+  // Writes the review file again before a review agent reads it: with this version's instructions, which a file from an
+  // older one lacks, and the lines every thread is on now. A review agent doesn't change the code, so nothing is noted
+  // to compare with later.
+  async handOffToReviewAgent(): Promise<void> {
+    if (!this.fileError) await this.update(() => undefined);
+  }
+
   get handedOff(): string | undefined {
     return this.handoff?.at;
   }

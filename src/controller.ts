@@ -258,8 +258,7 @@ export class Controller implements vscode.Disposable {
         : (await vscode.window.showQuickPick(terminals.map((t) => ({ label: t.name, terminal: t })), { placeHolder: `The terminal your ${agent} runs in` }))?.terminal;
     if (!terminal) return;
     void this.context.workspaceState.update(key, terminal.name);
-    // A review agent doesn't change the code, so there is nothing to compare with after it
-    if (!reviewAgent) await review.handOff();
+    await (reviewAgent ? review.handOffToReviewAgent() : review.handOff());
     terminal.show();
     terminal.sendText(reviewAgent ? review.reviewAgentPrompt() : review.prompt(), false);
   }
@@ -455,6 +454,7 @@ export class Controller implements vscode.Disposable {
       command('prereview.copyReviewAgentPrompt', async () => {
         const review = this.review;
         if (!review) return;
+        await review.handOffToReviewAgent();
         await vscode.env.clipboard.writeText(review.reviewAgentPrompt());
         vscode.window.showInformationMessage('Prompt copied. Paste it into your review agent.');
       }),
