@@ -476,8 +476,9 @@
   function header() {
     const s = state;
     // Lines in files not marked as viewed, counting a file changed since then in full
-    const left = s.files.filter((f) => f.viewed !== 'viewed').reduce((n, f) => n + (f.added ?? 0) + (f.deleted ?? 0), 0);
-    const data = [s.title, s.titleFromAgent, s.base, s.target, s.worktree, s.files.length, s.added, s.deleted, left, !!s.changesError, s.threads.length];
+    const unviewed = s.files.filter((f) => f.viewed !== 'viewed');
+    const left = unviewed.reduce((n, f) => n + (f.added ?? 0) + (f.deleted ?? 0), 0);
+    const data = [s.title, s.titleFromAgent, s.base, s.target, s.worktree, s.files.length, s.added, s.deleted, left, unviewed.length, !!s.changesError, s.threads.length];
     return part('header', data, () =>
       h(
         'header',
@@ -520,7 +521,7 @@
                 h(
                   'span',
                   { class: 'meta-item', title: 'Added and deleted lines in files not marked as viewed' },
-                  left ? `${plural(left, 'line')} to review` : [icon('check'), 'All viewed'],
+                  unviewed.length ? `${plural(left, 'line')} to review` : [icon('check'), 'All viewed'],
                 ),
               ]
             : s.changesError
