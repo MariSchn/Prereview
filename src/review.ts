@@ -359,8 +359,9 @@ export class Review implements vscode.Disposable {
   }
 
   async reply(id: string, body: string, resolve = false): Promise<void> {
-    const resolves = resolve && this.data.threads.find((t) => t.id === id)?.resolved === false;
+    let resolves = false;
     await this.update((doc) => {
+      resolves = resolve && doc.data.threads.find((t) => t.id === id)?.resolved === false;
       doc.addComment(id, newComment(body));
       if (resolve) doc.setResolved(id, true);
     });
@@ -372,8 +373,12 @@ export class Review implements vscode.Disposable {
   }
 
   async setResolved(id: string, resolved: boolean): Promise<void> {
-    const changes = this.data.threads.find((t) => t.id === id)?.resolved !== resolved;
-    await this.update((doc) => doc.setResolved(id, resolved));
+    // Read from the file as the change is written, so a second click while the first is saved isn't another step
+    let changes = false;
+    await this.update((doc) => {
+      changes = doc.data.threads.find((t) => t.id === id)?.resolved !== resolved;
+      doc.setResolved(id, resolved);
+    });
     if (changes) this.undoable(() => this.update((doc) => doc.setResolved(id, !resolved)));
     this.markRead([id]);
   }
@@ -669,6 +674,10 @@ export class Review implements vscode.Disposable {
         else delete all[file];
       }
       await this.state.update(this.viewedKey, all);
+      // A refresh since the untick dropped the versions of files that weren't viewed
+      const viewed = this.files.filter((f) => all[f.path] && !this.blobs.has(f.path));
+      const blobs = await this.blobsOf(viewed, false);
+      viewed.forEach((f, i) => blobs[i] && this.blobs.set(f.path, blobs[i]!));
       this.announce(false);
     });
   }

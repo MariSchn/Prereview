@@ -384,7 +384,7 @@
         "command": "prereview.undo",
         "key": "ctrl+z",
         "mac": "cmd+z",
-        "when": "prereview.canUndo && (!inputFocus && (focusedView == prereview.files || focusedView == prereview.reviews || !listFocus && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)) || editorTextFocus && editorReadonly && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile))"
+        "when": "prereview.canUndo && (!inputFocus && (focusedView == prereview.files || focusedView == prereview.reviews || !focusedView && !listFocus && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)) || editorTextFocus && editorReadonly && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile))"
       }
     ],
     "colors": [

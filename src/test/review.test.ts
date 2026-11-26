@@ -488,6 +488,14 @@ test('undo takes back resolves and viewed ticks, last first, and a file changed 
     assert.strictEqual(review.viewState(a()), 'unviewed');
     assert.strictEqual(review.canUndo, false);
     await review.undo();
+    await Promise.all([review.setResolved(id, true), review.setResolved(id, true)]);
+    await review.undo();
+    assert.strictEqual(review.canUndo, false);
+    await review.setViewed([a()], true);
+    await review.setViewed([a()], false);
+    await review.refresh();
+    await review.undo();
+    assert.strictEqual(review.viewState(a()), 'viewed');
     review.dispose();
   } finally {
     r.cleanup();
