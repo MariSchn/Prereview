@@ -234,6 +234,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "prereview.undo",
+        "title": "Undo Resolve or Viewed",
+        "category": "Prereview"
+      },
+      {
         "command": "prereview.finishReview",
         "title": "Finish Review…",
         "category": "Prereview",
@@ -374,6 +379,12 @@
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k",
         "when": "prereview.active"
+      },
+      {
+        "command": "prereview.undo",
+        "key": "ctrl+z",
+        "mac": "cmd+z",
+        "when": "prereview.canUndo && (!inputFocus && (focusedView == prereview.files || focusedView == prereview.reviews || !listFocus && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile)) || editorTextFocus && editorReadonly && (resource in prereview.viewedDocuments || resource in prereview.unviewedDocuments || activeEditor == multiDiffEditor && prereview.activeFile))"
       }
     ],
     "colors": [
@@ -753,6 +764,10 @@
         {
           "command": "prereview.refresh",
           "when": "prereview.active"
+        },
+        {
+          "command": "prereview.undo",
+          "when": "prereview.canUndo"
         },
         {
           "command": "prereview.finishReview",

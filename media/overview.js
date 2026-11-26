@@ -70,6 +70,12 @@
     state = event.data.state;
     if (!composing) render();
   });
+  // Outside a text box, Cmd/Ctrl+Z takes back the last resolve or viewed tick. In one, VS Code undoes the typing.
+  window.addEventListener('keydown', (event) => {
+    if (!(MAC ? event.metaKey : event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'z') return;
+    if (event.target.closest?.('textarea, input')) return;
+    post({ type: 'undo' });
+  });
   wide.addEventListener('change', () => state && render());
   vscode.postMessage({ type: 'ready' });
   setInterval(() => {
