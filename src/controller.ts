@@ -202,6 +202,7 @@ export class Controller implements vscode.Disposable {
     setContext('prereview.noChanges', clean);
     setContext('prereview.emptyDiff', noFiles && !clean && !review?.changesError);
     setContext('prereview.changedSinceHandoff', !!review?.changedSinceHandoff().length);
+    setContext('prereview.canUndo', !!review?.canUndo);
   }
 
   // Each diff's title bar shows the viewed buttons for its own file, so the states are published per document
@@ -504,6 +505,7 @@ export class Controller implements vscode.Disposable {
         await vscode.window.showTextDocument(vscode.Uri.file(filePath), { selection: at && new vscode.Range(at, at) });
       }),
       command('prereview.refresh', () => this.review?.refresh()),
+      command('prereview.undo', () => this.review?.undo()),
       command('prereview.finishReview', async (entry?: ReviewEntry) => {
         const filePath = entry?.filePath ?? this.review?.filePath;
         if (!filePath) return;

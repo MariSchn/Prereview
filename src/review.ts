@@ -195,6 +195,8 @@ export class Review implements vscode.Disposable {
   private handoff?: { at: string; ids: Record<string, string> };
   private generated = new Set<string>();
   private generatedFor?: string;
+  // What takes back each resolve, reopen and viewed tick of the reviewer, the last one at the end
+  private undos: (() => Promise<void>)[] = [];
   files: ChangedFile[] = [];
   changesError?: string;
   // Set while the review file can't be read; `data` then still holds what was last read from it
@@ -340,6 +342,7 @@ export class Review implements vscode.Disposable {
       [...this.pendingViewed],
       [...this.positions],
       this.sourcesVersion,
+      this.undos.length,
     ]);
     if (snapshot === this.snapshot) return;
     this.snapshot = snapshot;
@@ -356,18 +359,47 @@ export class Review implements vscode.Disposable {
   }
 
   async reply(id: string, body: string, resolve = false): Promise<void> {
+    let resolves = false;
     await this.update((doc) => {
+      resolves = resolve && doc.data.threads.find((t) => t.id === id)?.resolved === false;
       doc.addComment(id, newComment(body));
       if (resolve) doc.setResolved(id, true);
     });
+    // Undo reopens the thread and keeps the reply
+    if (resolves) this.undoable(() => this.update((doc) => doc.setResolved(id, false)));
     this.markRead([id]);
     const thread = this.data.threads.find((t) => t.id === id);
     await this.noteCommented(id, thread?.file, thread?.side);
   }
 
   async setResolved(id: string, resolved: boolean): Promise<void> {
-    await this.update((doc) => doc.setResolved(id, resolved));
+    // Read from the file as the change is written, so a second click while the first is saved isn't another step
+    let changes = false;
+    await this.update((doc) => {
+      changes = doc.data.threads.find((t) => t.id === id)?.resolved !== resolved;
+      doc.setResolved(id, resolved);
+    });
+    if (changes) this.undoable(() => this.update((doc) => doc.setResolved(id, !resolved)));
     this.markRead([id]);
+  }
+
+  get canUndo(): boolean {
+    return this.undos.length > 0;
+  }
+
+  // Takes back the last resolve, reopen or viewed tick
+  async undo(): Promise<void> {
+    const undo = this.undos.pop();
+    try {
+      await undo?.();
+    } finally {
+      this.announce(false);
+    }
+  }
+
+  private undoable(undo: () => Promise<void>): void {
+    this.undos.push(undo);
+    this.announce(false);
   }
 
   // When a comment was written, or for an agent comment without a time, when Prereview first saw it
@@ -608,6 +640,7 @@ export class Review implements vscode.Disposable {
     return this.enqueue(async () => {
       try {
         const all = { ...this.viewed() };
+        const before = files.map((f): [string, string | undefined] => [f.path, all[f.path]]);
         if (viewed) {
           const blobs = await this.blobsOf(files, true);
           files.forEach((f, i) => {
@@ -620,6 +653,8 @@ export class Review implements vscode.Disposable {
         }
         await this.state.update(this.viewedKey, all);
         saved = true;
+        // Puts back the versions noted before, so a file changed since it was viewed shows that again
+        if (before.some(([file, id]) => all[file] !== id)) this.undoable(() => this.restoreViewed(before));
       } finally {
         for (const f of files) {
           if (this.pendingViewed.get(f.path) === viewed) this.pendingViewed.delete(f.path);
@@ -628,6 +663,22 @@ export class Review implements vscode.Disposable {
         if (!saved) this.snapshot = undefined;
         this.announce(false);
       }
+    });
+  }
+
+  private restoreViewed(entries: [string, string | undefined][]): Promise<void> {
+    return this.enqueue(async () => {
+      const all = { ...this.viewed() };
+      for (const [file, id] of entries) {
+        if (id) all[file] = id;
+        else delete all[file];
+      }
+      await this.state.update(this.viewedKey, all);
+      // A refresh since the untick dropped the versions of files that weren't viewed
+      const viewed = this.files.filter((f) => all[f.path] && !this.blobs.has(f.path));
+      const blobs = await this.blobsOf(viewed, false);
+      viewed.forEach((f, i) => blobs[i] && this.blobs.set(f.path, blobs[i]!));
+      this.announce(false);
     });
   }
 

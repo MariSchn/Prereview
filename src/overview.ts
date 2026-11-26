@@ -192,6 +192,8 @@ export class Overview implements vscode.Disposable {
         return;
       case 'resolve':
         return review.setResolved(message.id, message.resolved === true);
+      case 'undo':
+        return review.undo();
       case 'comment':
         if (body) await review.addThread({}, body);
         return;

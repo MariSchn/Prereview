@@ -462,6 +462,46 @@ test('a viewed file is unticked when it changes, and the snapshot shows what it 
   }
 });
 
+test('undo takes back resolves and viewed ticks, last first, and a file changed since viewed shows that again', async () => {
+  const r = await repo({ 'a.ts': lines('one') });
+  try {
+    r.write('a.ts', lines('one', 'two'));
+    const review = await Review.open(r.root, 'main', null, new fake.Memento());
+    const a = () => review.files.find((f) => f.path === 'a.ts')!;
+    await review.addThread({ file: 'a.ts', startLine: 1, endLine: 1 }, 'why?');
+    const id = review.data.threads[0].id;
+    await review.setViewed([a()], true);
+    r.write('a.ts', lines('one', 'two', 'three'));
+    await review.refresh();
+    assert.strictEqual(review.viewState(a()), 'updated');
+    await review.setViewed([a()], true);
+    await review.setResolved(id, true);
+    await review.setResolved(id, true);
+    await review.undo();
+    assert.strictEqual(onDisk(review).threads[0].resolved, false);
+    await review.reply(id, 'ok', true);
+    await review.undo();
+    assert.deepStrictEqual([onDisk(review).threads[0].resolved, onDisk(review).threads[0].comments.length], [false, 2]);
+    await review.undo();
+    assert.strictEqual(review.viewState(a()), 'updated');
+    await review.undo();
+    assert.strictEqual(review.viewState(a()), 'unviewed');
+    assert.strictEqual(review.canUndo, false);
+    await review.undo();
+    await Promise.all([review.setResolved(id, true), review.setResolved(id, true)]);
+    await review.undo();
+    assert.strictEqual(review.canUndo, false);
+    await review.setViewed([a()], true);
+    await review.setViewed([a()], false);
+    await review.refresh();
+    await review.undo();
+    assert.strictEqual(review.viewState(a()), 'viewed');
+    review.dispose();
+  } finally {
+    r.cleanup();
+  }
+});
+
 test("a review of a worktree's branch is kept in that worktree, and found from the main checkout", async () => {
   const r = await repo({ 'a.ts': lines('one') });
   // Spelled as git spells worktrees, like the root the extension gets: on Windows without short names like RUNNER~1
